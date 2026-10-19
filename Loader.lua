@@ -1,8 +1,5 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
--- ============================================================
---  LOADING SCREEN: "Obsession Hub" with falling sakura, shown while the game script loads
--- ============================================================
 local Intro
 do
     local made, result = pcall(function()
@@ -43,7 +40,6 @@ do
         backGrad.Color = ColorSequence.new(Color3.fromRGB(30, 18, 34), Color3.fromRGB(11, 8, 14))
         backGrad.Parent = back
 
-        -- falling sakura petals
         local petals = {}
         for i = 1, 30 do
             local w = 8 + math.random() * 7
@@ -61,7 +57,6 @@ do
             }
         end
 
-        -- centre: title, status, progress bar
         local center = Instance.new("Frame")
         center.AnchorPoint = Vector2.new(0.5, 0.5)
         center.Position = UDim2.fromScale(0.5, 0.5)
@@ -136,7 +131,7 @@ do
             beat:Disconnect()
             gui:Destroy()
         end
-        -- waits out the minimum time, fills the bar, fades everything out, then pops the menu in
+
         function api.Finish(window)
             task.spawn(function()
                 if closed then return end
@@ -159,7 +154,7 @@ do
                 api.Close()
             end)
         end
-        -- safety net: never leave the screen stuck if something dies halfway
+
         task.delay(45, api.Close)
         return api
     end)
@@ -170,20 +165,14 @@ do
     end
 end
 
--- feature scripts pick these up to report progress and hand over their window
 local env = getgenv and getgenv() or _G
 env.LazyJiroIntro = Intro
 env.LazyJiroWindow = nil
 
--- ============================================================
---  YOUR LOADER (unchanged logic)
--- ============================================================
 local base = "https://raw.githubusercontent.com/jiroscriptsss/LazyHub/main/Games/"
 
--- [GameId] = "FileName.lua" (file lives in the Games folder)
--- Find a game's ID by running: print(game.GameId, game.PlaceId)
 local Games = {
-    [0] = "DungeonGame.lua", -- replace 0 with the dungeon game's real GameId
+    [0] = "DungeonGame.lua",
 }
 
 local file = Games[game.GameId]
@@ -221,5 +210,4 @@ if not ran then
     return
 end
 
--- the script has built its menu: finish the loading screen and pop the menu in
 Intro.Finish(env.LazyJiroWindow)

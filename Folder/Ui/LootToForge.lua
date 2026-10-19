@@ -125,7 +125,7 @@ end
 local function autoKillLoop()
     local enemies = Workspace:WaitForChild("EnemyFolder", 5)
     if not enemies then
-        warn("[Lazy Jiro Hub] EnemyFolder not found")
+        warn("[LazyJiro] EnemyFolder not found")
         State.AutoKill = false
         return
     end
@@ -141,14 +141,14 @@ local function autoKillLoop()
 end
 
 local Window = Lib:CreateWindow({
-    Name      = "LAZY JIRO HUB",
+    Name      = "LazyJiro",
     ToggleKey = Enum.KeyCode.RightShift,
     Link      = "https://github.com/jiroscriptsss/LazyHub",
 })
 
 -- the menu library is hosted separately; stop early if the hosted copy is older than this script needs
 if (Lib.Version or 0) < 4 then
-    warn("[Lazy Jiro Hub] LazyJiroUI.lua on GitHub is outdated. Upload the new one, wait a few minutes, then run again.")
+    warn("[LazyJiro] LazyJiroUI.lua on GitHub is outdated. Upload the new one, wait a few minutes, then run again.")
     Window:Notify({ Title = "Update needed", Content = "LazyJiroUI.lua on GitHub is outdated. Upload the new file, wait a few minutes, then run again.", Duration = 12 })
     return
 end
@@ -190,7 +190,7 @@ do
     local Util = {}
     function Util.Try(fn, ...)
         local ok, err = pcall(fn, ...)
-        if not ok then warn("[Lazy Jiro Hub]", err) end
+        if not ok then warn("[LazyJiro]", err) end
         return ok, err
     end
     function Util.Tier(id) return tonumber(tostring(id):match("%d+")) or 0 end
@@ -222,7 +222,7 @@ do
             ok, loaded = GameLib.RequireAsGame(module)
             if not ok then
                 GameLib.Failed[module] = tostring(firstErr)
-                warn("[Lazy Jiro Hub] require", module:GetFullName(), firstErr)
+                warn("[LazyJiro] require", module:GetFullName(), firstErr)
                 return nil
             end
         end
@@ -399,7 +399,7 @@ do
                 resolved[key] = hit
                 if not announced[key] then
                     announced[key] = true
-                    print(("[Lazy Jiro Hub] remote %s -> %s"):format(key, hit:GetFullName()))
+                    print(("[LazyJiro] remote %s -> %s"):format(key, hit:GetFullName()))
                 end
                 return hit
             end
@@ -441,7 +441,7 @@ do
         if not streak then
             streak = { count = 0, since = now }
             failures[key] = streak
-            warn("[Lazy Jiro Hub]", key, tostring(result))
+            warn("[LazyJiro]", key, tostring(result))
         end
         streak.count += 1
         streak.nextTry = now + math.min(FarmCfg.RetryMax, FarmCfg.RetryBase * 2 ^ math.min(streak.count - 1, 8))
@@ -449,7 +449,7 @@ do
             failures[key] = nil
             Farm.Opt[key] = false
             local reason = tostring(result):match("[^\n]*")
-            warn("[Lazy Jiro Hub]", key, "stopped:", reason)
+            warn("[LazyJiro]", key, "stopped:", reason)
             local toggle = Farm.Toggles[key]
             if toggle then toggle:Set(false, true) end
             notify(key .. " stopped: " .. reason, "Warning")
@@ -473,7 +473,7 @@ do
                 end
             end)
             Farm.Loops[key] = nil
-            if not ok then warn("[Lazy Jiro Hub]", key, err) end
+            if not ok then warn("[LazyJiro]", key, err) end
         end)
     end
 
@@ -725,7 +725,7 @@ do
             stageDropdown:Refresh(stages)
             stageDropdown:Set(stages[1])
         else
-            warn("[Lazy Jiro Hub] stage list:", stages)
+            warn("[LazyJiro] stage list:", stages)
             stageDropdown:Refresh({ "Unavailable" })
             stageDropdown:Set("Unavailable", true)
             notify("Stage list could not be read. Auto Collect Ore will use the best stage if it can")
@@ -738,7 +738,7 @@ do
             rarityDropdown:Refresh(names)
             rarityDropdown:Set(names) -- everything selected by default
         else
-            warn("[Lazy Jiro Hub] rarity list:", names)
+            warn("[LazyJiro] rarity list:", names)
             rarityDropdown:Refresh({ "Unavailable" })
             rarityDropdown:Set({}, true)
             notify("Rarity list could not be read, so Auto Collect Ore can't filter ores")
@@ -769,7 +769,7 @@ do
         if ok then
             notify("Left the fight")
         else
-            warn("[Lazy Jiro Hub] exit fight:", err)
+            warn("[LazyJiro] exit fight:", err)
             notify("Could not exit the fight", "Warning")
         end
     end })
@@ -794,7 +794,7 @@ do
                 end
             end))
         end)
-        if not ok then warn("[Lazy Jiro Hub] ore boss hook:", err) end
+        if not ok then warn("[LazyJiro] ore boss hook:", err) end
     end)
 
     -- stop every worker when the UI is destroyed
@@ -807,7 +807,8 @@ end
 -- ============================================================
 --  FORGE (ported from the old PixeL script)
 -- ============================================================
--- its own sidebar page, right under Farm
+-- sidebar order under Farm: Sell, then Forge (pages are listed in the order they are created)
+local SellPage = Window:AddPage({ Name = "Sell" })
 local ForgePage = Window:AddPage({ Name = "Forge" })
 local ForgeTab = ForgePage:AddTab("Forge")
 do
@@ -1136,7 +1137,7 @@ do
                         task.wait(FC.TickDelay)
                     else
                         fails += 1
-                        if fails == 1 then warn("[Lazy Jiro Hub] Auto Forge:", tostring(err)) end
+                        if fails == 1 then warn("[LazyJiro] Auto Forge:", tostring(err)) end
                         if fails >= FC.MaxFailures then
                             F.Opt.AutoForge = false
                             if toggleAuto then toggleAuto:Set(false, true) end
@@ -1160,7 +1161,7 @@ do
             local ok, result = pcall(ForgeStep)
             F.Busy = false
             if not ok then
-                warn("[Lazy Jiro Hub] Forge Now:", tostring(result))
+                warn("[LazyJiro] Forge Now:", tostring(result))
                 fnotify("Forge failed; check the console")
             elseif (result or 0) > 0 then
                 fnotify(("Forged %d time(s)"):format(result))
@@ -1234,7 +1235,7 @@ do
             oreDropdown:Refresh(labels)
             oreDropdown:Set(FC.OwnedLabel, true)
         else
-            warn("[Lazy Jiro Hub] forge ore list:", labels)
+            warn("[LazyJiro] forge ore list:", labels)
             fnotify("Ore list could not be read, only Owned ores will work")
         end
     end)
@@ -1245,7 +1246,7 @@ do
             rarityDropdown:Refresh(names)
             rarityDropdown:Set(names) -- everything selected by default
         else
-            warn("[Lazy Jiro Hub] forge rarity list:", names)
+            warn("[LazyJiro] forge rarity list:", names)
             rarityDropdown:Refresh({ "Unavailable" })
             rarityDropdown:Set({}, true)
             fnotify("Rarity list could not be read, so Owned ores can't be filtered")
@@ -1256,9 +1257,8 @@ do
 end
 
 -- ============================================================
---  SELL (own sidebar page, right under Forge)
+--  SELL (its page is created above, right under Farm)
 -- ============================================================
-local SellPage = Window:AddPage({ Name = "Sell" })
 local SellTab = SellPage:AddTab("Sell")
 do
     local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
@@ -1377,7 +1377,7 @@ do
                         fails = 0
                     else
                         fails += 1
-                        if fails == 1 then warn("[Lazy Jiro Hub] Auto Sell:", tostring(err)) end
+                        if fails == 1 then warn("[LazyJiro] Auto Sell:", tostring(err)) end
                         if fails >= SC.MaxFailures then
                             S.Opt.AutoSell = false
                             if toggleAuto then toggleAuto:Set(false, true) end
@@ -1412,7 +1412,7 @@ do
             local ok, result = pcall(SellOnce)
             S.Busy = false
             if not ok then
-                warn("[Lazy Jiro Hub] Sell All Now:", tostring(result))
+                warn("[LazyJiro] Sell All Now:", tostring(result))
                 snotify("Sell failed; check the console", "Error")
             else
                 snotify(("Sold %d item(s)"):format(result or 0), "Success")
@@ -1454,7 +1454,7 @@ do
             rarityDropdown:Refresh(names)
             rarityDropdown:Set(names) -- everything selected by default
         else
-            warn("[Lazy Jiro Hub] sell rarity list:", names)
+            warn("[LazyJiro] sell rarity list:", names)
             rarityDropdown:Refresh({ "Unavailable" })
             rarityDropdown:Set({}, true)
             snotify("Rarity list could not be read, so selling can't be filtered", "Warning")
@@ -2000,7 +2000,7 @@ do
                 gearDropdown:Refresh(labels)
                 gearDropdown:Set(labels[1])
             else
-                if not ok then warn("[Lazy Jiro Hub] gear list:", labels) end
+                if not ok then warn("[LazyJiro] gear list:", labels) end
                 gearDropdown:Refresh({ "Unavailable" })
                 gearDropdown:Set("Unavailable", true)
                 notify("Gear list could not be read", "Warning")
@@ -2042,7 +2042,7 @@ do
         S.Busy, S.Forging = false, false
         spawnButton:SetText("Spawn Gear")
         if not ok then
-            warn("[Lazy Jiro Hub] forge gear:", got)
+            warn("[LazyJiro] forge gear:", got)
             notify("Forge failed; check the console", "Error")
         elseif got >= copies then
             notify(("Got %d x %s"):format(got, tostring(gear.id)), "Success")
@@ -2057,7 +2057,7 @@ do
         local ok, bought, short = pcall(BuyExclusive)
         S.Busy = false
         if not ok then
-            warn("[Lazy Jiro Hub] buy exclusive:", bought)
+            warn("[LazyJiro] buy exclusive:", bought)
             notify("Could not buy; check the console", "Error")
         elseif bought > 0 then
             notify(("Bought %d exclusive piece(s)"):format(bought), "Success")
@@ -2112,4 +2112,4 @@ pcall(function()
     end)
 end)
 
-Window:Notify({ Title = "Lazy Jiro Hub", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })
+Window:Notify({ Title = "LazyJiro", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })

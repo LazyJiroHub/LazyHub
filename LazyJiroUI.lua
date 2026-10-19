@@ -1132,22 +1132,9 @@ function Lib:CreateWindow(cfg)
             end
             tab.Cols = { Left = col(1), Right = col(2) }
 
-            -- A column with no cards is hidden and the other one takes the full width, so a
-            -- single-card tab is not stuck in half the window. Cards keep their natural height
-            -- (equal 14px bottom padding) instead of being stretched with dead space.
-            tab.Balance = function()
-                local hasL, hasR = false, false
-                for _, c in ipairs(tab.Cards) do
-                    if c.Frame.Parent == tab.Cols.Left then hasL = true end
-                    if c.Frame.Parent == tab.Cols.Right then hasR = true end
-                end
-                local single = hasL ~= hasR
-                tab.Cols.Left.Visible = hasL or not single
-                tab.Cols.Right.Visible = hasR or not single
-                local w = single and UDim2.new(1, 0, 0, 0) or UDim2.new(0.5, -8, 0, 0)
-                tab.Cols.Left.Size = w
-                tab.Cols.Right.Size = w
-            end
+            -- Columns always stay at half width, so a card looks the same whether or not it has a neighbour.
+            -- Kept as a function because other code calls tab.Balance().
+            tab.Balance = function() end
 
             function tab:AddCard(title, side, tag)
                 -- guard: unknown side strings fall back to alternating Left/Right

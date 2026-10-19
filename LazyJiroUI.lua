@@ -439,6 +439,8 @@ function Elements:AddDropdown(o)
         AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), Parent = cont,
     })
     New("UIListLayout", { Padding = UDim.new(0, GAP), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
+    -- bottom inset so the open list never clips the card boundary below it
+    New("UIPadding", { PaddingBottom = UDim.new(0, 6), Parent = list })
 
     local obj = { Value = multi and {} or nil, Window = self.Window }
     local buttons = {}
@@ -517,7 +519,10 @@ function Elements:AddDropdown(o)
     head.MouseButton1Click:Connect(function()
         list.Visible = not list.Visible
         arrow.Text = list.Visible and "^" or "v"
-        if card.Tab and card.Tab.Balance then card.Tab.Balance() end
+        -- defer so AutomaticCanvasSize settles before Balance re-measures columns
+        task.delay(0.05, function()
+            if card.Tab and card.Tab.Balance then card.Tab.Balance() end
+        end)
     end)
 
     obj:Refresh(opts)
@@ -1090,6 +1095,8 @@ function Lib:CreateWindow(cfg)
                     BackgroundTransparency = 1, Parent = colRow,
                 })
                 New("UIListLayout", { Padding = UDim.new(0, 12), SortOrder = Enum.SortOrder.LayoutOrder, Parent = c })
+                -- ensure both columns always start at the same top edge
+                New("UIPadding", { PaddingTop = UDim.new(0, 0), PaddingBottom = UDim.new(0, 0), Parent = c })
                 return c
             end
             tab.Cols = { Left = col(1), Right = col(2) }
@@ -1123,10 +1130,13 @@ function Lib:CreateWindow(cfg)
             end
 
             function tab:AddCard(title, side, tag)
+                -- guard: unknown side strings fall back to alternating Left/Right
+                local colKey = (side == "Left" or side == "Right") and side
+                    or (#tab.Cards % 2 == 0 and "Left" or "Right")
                 local card = setmetatable({ Els = {}, _n = 0, Window = Window, Tab = tab }, { __index = Elements })
                 card.Frame = New("Frame", {
                     Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Color3.new(1, 1, 1),
-                    BackgroundTransparency = 0.04, Parent = tab.Cols[side or "Left"],
+                    BackgroundTransparency = 0.04, Parent = tab.Cols[colKey],
                 })
                 Corner(card.Frame, 14); Stroke(card.Frame, Theme.Stroke, 1)
                 Grad(card.Frame, Color3.fromRGB(33, 26, 38), Theme.Card, 90)

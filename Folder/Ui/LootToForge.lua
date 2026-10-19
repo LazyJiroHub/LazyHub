@@ -1903,4 +1903,4 @@ pcall(function()
     end)
 end)
 
-Window:Notify({ Title = "Lazy Jiro Hub", Content = "Loaded. Press RightShift to hide or show.", Duration = 5 })
+Window:Notify({ Title = "Lazy Jiro Hub", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })

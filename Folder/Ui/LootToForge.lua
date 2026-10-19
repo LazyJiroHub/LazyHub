@@ -801,6 +801,456 @@ do
     Window.reg({ Disconnect = function() Farm.Alive = false end })
 
     Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify = Util, GameLib, Cfg, notify
+    Shared.Ore, Shared.Stage, Shared.Farm, Shared.RarityNames = Ore, Stage, Farm, RarityNames
+end
+
+-- ============================================================
+--  FORGE (ported from the old PixeL script)
+-- ============================================================
+local ForgeTab = Main:AddTab("Forge")
+do
+    local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
+    local Ore, Stage, Farm = Shared.Ore, Shared.Stage, Shared.Farm
+
+    local FC = {
+        RefillAmount = 100000, AcquireRounds = 300, TickDelay = 0.2, MaxFailures = 5,
+        ScoreLevel = 20, OwnedLabel = "Owned ores",
+        Targets = {
+            { name = "Great Weapon", forgeType = "Weapon", ores = 13 },
+            { name = "Katana",       forgeType = "Weapon", ores = 4 },
+            { name = "Armor",        forgeType = "Armor",  ores = 11 },
+            { name = "Hat",          forgeType = "Armor",  ores = 4 },
+        },
+    }
+
+    local F = {
+        Alive = true, Busy = false, Running = false, Profile = nil, OreLabels = {}, OreStage = {},
+        Opt = {
+            AutoForge = false, ForgeTarget = "Great Weapon", ForgeOre = FC.OwnedLabel, ForgeRarities = {},
+            KeepPerOre = 0, BestOreFirst = false, ForgePerTick = 10, SellJunk = false,
+        },
+    }
+
+    local function fnotify(text) notify(text, "Forge") end
+
+    -- ---------- data ----------
+    local function GetProfile()
+        F.Profile = Util.Remote("Profile", "GetTotalDataRF"):InvokeServer()
+        return F.Profile
+    end
+
+    local function Count(profile, itemId)
+        local total = 0
+        for _, entry in pairs(profile.Backpack.have) do
+            if entry.ID == itemId then total += entry.Number or 1 end
+        end
+        return total
+    end
+
+    local function Uuid(profile, itemId)
+        for uuid, entry in pairs(profile.Backpack.have) do
+            if entry.ID == itemId and (entry.Number or 0) >= 1 then return uuid end
+        end
+        return nil
+    end
+
+    local function Snapshot()
+        local seen = {}
+        for uuid in pairs(GetProfile().Backpack.have) do seen[uuid] = true end
+        return seen
+    end
+
+    local function NewGear(before)
+        local fresh = {}
+        for uuid, entry in pairs(GetProfile().Backpack.have) do
+            if not before[uuid] and entry.Type ~= "Ore" and entry.Type ~= "Material" and entry.Type ~= "EnchStone" then
+                fresh[uuid] = entry
+            end
+        end
+        return fresh
+    end
+
+    -- ---------- ores ----------
+    local function OreIds()
+        local ids = {}
+        for oreId in pairs(GameLib.Need(Cfg().Ore.Config)) do table.insert(ids, oreId) end
+        table.sort(ids, function(a, b) return Util.Tier(a) > Util.Tier(b) end)
+        return ids
+    end
+
+    local function HighestKey(configTable)
+        local bestKey, bestTier = nil, -1
+        for key in pairs(configTable) do
+            local tier = Util.Tier(key)
+            if tier > bestTier then bestKey, bestTier = key, tier end
+        end
+        return bestKey
+    end
+
+    local function OwnedOres(profile)
+        local ores = {}
+        for uuid, entry in pairs(profile.Backpack.have) do
+            if entry.Type == "Ore" and (entry.Number or 0) >= 1 then
+                table.insert(ores, {
+                    uuid = uuid, id = entry.ID, tier = Util.Tier(entry.ID),
+                    number = math.floor(entry.Number), rarity = Ore.Rarity(entry.ID),
+                })
+            end
+        end
+        table.sort(ores, function(a, b) return a.tier > b.tier end)
+        return ores
+    end
+
+    local function OreChoices()
+        local oreShow = GameLib.Need(Cfg().Ore.Show)
+        local labels, idByLabel = { FC.OwnedLabel }, {}
+        for _, oreId in ipairs(OreIds()) do
+            local label = ("%s (%s)"):format(oreShow[oreId] and oreShow[oreId].DisplayName or oreId, Ore.Rarity(oreId) or "?")
+            if idByLabel[label] then label = ("%s #%d"):format(label, Util.Tier(oreId)) end
+            idByLabel[label] = oreId
+            table.insert(labels, label)
+        end
+        F.OreLabels = idByLabel
+        return labels
+    end
+
+    -- adds ore to a stack you already own (negative "sell" amount)
+    local function AddOre(uuid, amount)
+        Util.Remote("Backpack", "TrySellItemRE"):FireServer(uuid, -math.abs(amount))
+    end
+
+    -- farms stages until the wanted ore drops once, so it can then be topped up
+    local function AcquireOre(oreId)
+        -- never open a new stage over a pending Auto Collect Ore batch
+        local deadline = os.clock() + 5
+        while (Farm.CollectBusy or Farm.OreBatch) and os.clock() < deadline do task.wait(0.1) end
+        if Farm.CollectBusy or Farm.OreBatch then return false end
+
+        local stages = Stage.List()
+        if #stages == 0 then return false end
+        local known = F.OreStage[oreId]
+        local top = HighestKey(GameLib.Need(Cfg().Ore.Config))
+        local target = Util.Tier(oreId) * #stages / math.max(1, Util.Tier(top))
+        table.sort(stages, function(a, b)
+            if a == b then return false end
+            if a == known or b == known then return a == known end
+            return math.abs(Util.Tier(a) - target) < math.abs(Util.Tier(b) - target)
+        end)
+
+        local finished = Util.Remote("Stage", "StageFinishedRF")
+        local pickOre = Util.Remote("Stage", "GetOreRF")
+        for round = 1, FC.AcquireRounds do
+            if not F.Alive then return false end
+            local stageId = stages[(round - 1) % math.min(#stages, 4) + 1]
+            local drops = finished:InvokeServer(stageId)
+            for uuid, drop in pairs(type(drops) == "table" and drops or {}) do
+                if drop == oreId and pickOre:InvokeServer(uuid) then
+                    Util.Remote("Stage", "ClaimedAllOreRE"):FireServer()
+                    F.OreStage[oreId] = stageId
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
+    local function EnsureOre(oreId, need)
+        local profile = GetProfile()
+        local uuid = Uuid(profile, oreId)
+        if not uuid then
+            if not AcquireOre(oreId) then return nil end
+            task.wait(0.4)
+            profile = GetProfile()
+            uuid = Uuid(profile, oreId)
+        end
+        if uuid and Count(profile, oreId) < need then
+            AddOre(uuid, math.max(FC.RefillAmount, need))
+            task.wait(0.4)
+        end
+        return uuid
+    end
+
+    -- ---------- selling the forge leftovers ----------
+    local function Anchors(profile)
+        local anchors, bestPower = {}, {}
+        for uuid, entry in pairs(profile.Backpack.have) do
+            if entry.Type == "Weapon" or entry.Type == "Armor" or entry.Type == "Hat" then
+                local helper = GameLib.Api(entry.Type == "Weapon" and Cfg().Weapon.Helper or Cfg().Armor.Helper)
+                local ok, percent = pcall(helper.CheckIsBestPercent, entry.ID)
+                if ok and not percent then
+                    local powerOk, power = pcall(helper.GetMainAffix, entry.ID)
+                    if powerOk and type(power) == "number" and power > (bestPower[entry.Type] or 0) then
+                        bestPower[entry.Type] = power
+                        anchors[entry.Type] = uuid
+                    end
+                end
+            end
+        end
+        local keep = {}
+        for _, uuid in pairs(anchors) do keep[uuid] = true end
+        -- items you locked in game are never sold
+        local localData = ReplicatedStorage:FindFirstChild("LocalData")
+        local backpackModule = localData and localData:FindFirstChild("BackpackData")
+        local backpack = backpackModule and GameLib.Require(backpackModule)
+        if type(backpack) == "table" and type(backpack.IsLocked) == "function" then
+            for uuid in pairs(profile.Backpack.have) do
+                local ok, locked = pcall(backpack.IsLocked, uuid)
+                if ok and locked then keep[uuid] = true end
+            end
+        end
+        return keep
+    end
+
+    local function SellFresh(fresh, keep)
+        local profile = F.Profile or GetProfile()
+        local protected = Anchors(profile)
+        for _, uuid in pairs(profile.Backpack.equiped) do protected[uuid] = true end
+        local sell = Util.Remote("Backpack", "TrySellItemRE")
+        for uuid in pairs(fresh) do
+            if not protected[uuid] and not (keep and keep[uuid]) then
+                sell:FireServer(uuid, 1)
+            end
+        end
+    end
+
+    local function GearScore(entry, atTarget)
+        local balance = GameLib.Api(ReplicatedStorage.Utils.BalanceUtils)
+        local backpack = (F.Profile or GetProfile()).Backpack
+        local potential = table.clone(entry)
+        if atTarget then potential.Level = math.max(entry.Level or 0, FC.ScoreLevel) end
+        local value = entry.Type == "Weapon" and balance.GetWeaponTrainValue or balance.GetArmorValue
+        local ok, power = pcall(value, LocalPlayer, potential, backpack)
+        if not ok or type(power) ~= "number" then return 0 end
+        return power * (1 + (entry.Level or 0) * 1e-6 + #(entry.EnchanceList or {}) * 1e-9)
+    end
+
+    -- ---------- forging ----------
+    local function Target()
+        for _, target in ipairs(FC.Targets) do
+            if target.name == F.Opt.ForgeTarget then return target end
+        end
+        return FC.Targets[1]
+    end
+
+    local function RunForge(forgeType, oreList)
+        return Util.Remote("Forge", "ForgeRF"):InvokeServer({ ConfigType = forgeType, UUIDList = oreList })
+    end
+
+    local function PickOwned(profile, count)
+        local opt = F.Opt
+        local candidates = {}
+        for _, ore in ipairs(OwnedOres(profile)) do
+            local spare = ore.number - opt.KeepPerOre
+            if Ore.Allows(opt.ForgeRarities, ore.rarity) and spare > 0 then
+                ore.spare = spare
+                table.insert(candidates, ore)
+            end
+        end
+        if not opt.BestOreFirst then
+            table.sort(candidates, function(a, b) return a.tier < b.tier end)
+        end
+        local pick, need = {}, count
+        for _, ore in ipairs(candidates) do
+            if need <= 0 then break end
+            local take = math.min(need, ore.spare)
+            pick[ore.uuid] = take
+            need -= take
+        end
+        return need <= 0 and pick or nil
+    end
+
+    local function PickOre(count)
+        local oreId = F.OreLabels[F.Opt.ForgeOre]
+        if not oreId then return PickOwned(GetProfile(), count) end
+        local uuid = EnsureOre(oreId, count * F.Opt.ForgePerTick)
+        return uuid and { [uuid] = count }
+    end
+
+    local function ForgeOnce()
+        local target = Target()
+        local pick = PickOre(target.ores)
+        if not pick then return false end
+        local result = RunForge(target.forgeType, pick)
+        return result ~= nil and result ~= false
+    end
+
+    local function ForgeBurst()
+        local target = Target()
+        local perTick = F.Opt.ForgePerTick
+        local pick = PickOre(target.ores * perTick)
+        if not pick then return 0 end
+        local completed = 0
+        local uuid = next(pick)
+        if next(pick, uuid) == nil then
+            for _ = 1, perTick do
+                if not F.Alive then break end
+                local result = RunForge(target.forgeType, { [uuid] = target.ores })
+                if result ~= nil and result ~= false then completed += 1 end
+            end
+            return completed
+        end
+        for _ = 1, perTick do
+            if not F.Alive or not ForgeOnce() then break end
+            completed += 1
+        end
+        return completed
+    end
+
+    local function ForgeStep()
+        if not F.Opt.SellJunk then return ForgeBurst() end
+        local before = Snapshot()
+        local completed = ForgeBurst()
+        local fresh = NewGear(before)
+        local profile = F.Profile
+        local keep = {}
+        for uuid, entry in pairs(fresh) do
+            local worn = profile.Backpack.equiped[entry.Type]
+            local wornEntry = worn and profile.Backpack.have[worn]
+            if not wornEntry or GearScore(entry, true) > GearScore(wornEntry, true) then
+                keep[uuid] = true
+            end
+        end
+        SellFresh(fresh, keep)
+        return completed
+    end
+
+    -- ---------- auto loop ----------
+    local toggleAuto
+
+    local function StartAutoForge()
+        if F.Running then return end
+        F.Running = true
+        task.spawn(function()
+            local fails = 0
+            while F.Alive and F.Opt.AutoForge do
+                if F.Busy then
+                    task.wait(FC.TickDelay)
+                else
+                    F.Busy = true
+                    local ok, err = pcall(ForgeStep)
+                    F.Busy = false
+                    if ok then
+                        fails = 0
+                        task.wait(FC.TickDelay)
+                    else
+                        fails += 1
+                        if fails == 1 then warn("[Lazy Jiro Hub] Auto Forge:", tostring(err)) end
+                        if fails >= FC.MaxFailures then
+                            F.Opt.AutoForge = false
+                            if toggleAuto then toggleAuto:Set(false, true) end
+                            fnotify("Auto Forge stopped: " .. tostring(err):match("[^\n]*"))
+                            break
+                        end
+                        task.wait(math.min(2, 0.25 * 2 ^ (fails - 1)))
+                    end
+                end
+            end
+            F.Running = false
+            -- toggled off and on again while the old loop was winding down
+            if F.Alive and F.Opt.AutoForge then StartAutoForge() end
+        end)
+    end
+
+    local function ForgeNow()
+        if F.Busy then return fnotify("Forge is busy, try again in a moment") end
+        F.Busy = true
+        task.spawn(function()
+            local ok, result = pcall(ForgeStep)
+            F.Busy = false
+            if not ok then
+                warn("[Lazy Jiro Hub] Forge Now:", tostring(result))
+                fnotify("Forge failed; check the console")
+            elseif (result or 0) > 0 then
+                fnotify(("Forged %d time(s)"):format(result))
+            else
+                fnotify("Nothing forged. Check Forge Ore Rarity and Keep Per Ore")
+            end
+        end)
+    end
+
+    -- ---------- UI ----------
+    local ForgeCard = ForgeTab:AddCard("Forge", "Left")
+    local OreCard = ForgeTab:AddCard("Ore Usage", "Right")
+
+    local targetNames = {}
+    for _, target in ipairs(FC.Targets) do table.insert(targetNames, target.name) end
+    ForgeCard:AddDropdown({ Name = "Target Gear", Stacked = true, Options = targetNames, Default = targetNames[1], Callback = function(v)
+        F.Opt.ForgeTarget = v
+    end })
+
+    local oreDropdown = ForgeCard:AddDropdown({
+        Name = "Ore To Use", Stacked = true, Description = "Pick an ore and it never runs out",
+        Options = { FC.OwnedLabel }, Default = FC.OwnedLabel,
+        Callback = function(v) F.Opt.ForgeOre = v end,
+    })
+
+    toggleAuto = ForgeCard:AddToggle({ Name = "Auto Forge", Description = "Forges the target gear nonstop", Default = false, Callback = function(v)
+        F.Opt.AutoForge = v
+        if v then StartAutoForge() end
+    end })
+
+    ForgeCard:AddButton({ Name = "Forge Now", Primary = true, Callback = ForgeNow })
+
+    ForgeCard:AddSlider({ Name = "Forges Per Round", Min = 1, Max = 50, Default = 10, Increment = 1, Callback = function(v)
+        F.Opt.ForgePerTick = v
+    end })
+
+    ForgeCard:AddToggle({ Name = "Sell worse gear right away", Default = false, Callback = function(v)
+        F.Opt.SellJunk = v
+    end })
+
+    OreCard:AddLabel("Used when Ore To Use is Owned ores")
+
+    OreCard:AddToggle({ Name = "Spend Best Ore First", Description = "Off = spend the weakest ore first", Default = false, Callback = function(v)
+        F.Opt.BestOreFirst = v
+    end })
+
+    local rarityDropdown = OreCard:AddDropdown({
+        Name = "Forge Ore Rarity", Stacked = true, Multi = true,
+        Description = "Only these ore rarities are used for forging",
+        Options = { "Loading..." }, Default = {},
+        Callback = function(set)
+            set["Loading..."] = nil
+            F.Opt.ForgeRarities = set
+        end,
+    })
+
+    local keepInput
+    keepInput = OreCard:AddInput({
+        Name = "Keep Per Ore", Stacked = true, Description = "Never forge below this amount of each ore",
+        Default = "0", Placeholder = "0",
+        Callback = function(text)
+            F.Opt.KeepPerOre = math.max(0, math.floor(tonumber(text) or F.Opt.KeepPerOre))
+            if keepInput then keepInput:Set(tostring(F.Opt.KeepPerOre)) end
+        end,
+    })
+
+    -- lists are read from the game after the menu is up so a slow load never blocks it
+    task.spawn(function()
+        local ok, labels = pcall(OreChoices)
+        if ok and #labels > 0 then
+            oreDropdown:Refresh(labels)
+            oreDropdown:Set(FC.OwnedLabel, true)
+        else
+            warn("[Lazy Jiro Hub] forge ore list:", labels)
+            fnotify("Ore list could not be read, only Owned ores will work")
+        end
+    end)
+
+    task.spawn(function()
+        local ok, names = pcall(Shared.RarityNames)
+        if ok and type(names) == "table" and #names > 0 then
+            rarityDropdown:Refresh(names)
+            rarityDropdown:Set(names) -- everything selected by default
+        else
+            warn("[Lazy Jiro Hub] forge rarity list:", names)
+            rarityDropdown:Refresh({ "Unavailable" })
+            rarityDropdown:Set({}, true)
+            fnotify("Rarity list could not be read, so Owned ores can't be filtered")
+        end
+    end)
+
+    Window.reg({ Disconnect = function() F.Alive = false end })
 end
 
 -- ============================================================
@@ -1421,10 +1871,34 @@ end)
 
 Window:AddCategory("Miscellaneous")
 local Settings = Window:AddPage({ Name = "Settings" })
-local UiCard = Settings:AddTab("Interface"):AddCard("UI Settings", "Left")
+local InterfaceTab = Settings:AddTab("Interface")
+local UiCard = InterfaceTab:AddCard("UI Settings", "Left")
 UiCard:AddKeybind({ Name = "Toggle UI Key", Default = Window.ToggleKey, Changed = function(k) Window:SetToggleKey(k) end })
 UiCard:AddToggle({ Name = "Falling Petals", Default = true, Callback = function(v) Window:SetPetals(v) end })
 UiCard:AddSlider({ Name = "UI Scale", Min = 0.6, Max = 1.3, Default = 1, Increment = 0.05, Callback = function(v) Window:SetScale(v) end })
 UiCard:AddButton({ Name = "Destroy UI", Primary = false, Callback = function() Window:Destroy() end })
+
+-- Anti AFK: Roblox kicks idle players after ~20 minutes. A fake right-click on every idle event resets that timer.
+local AntiAfk = { Enabled = true, Blocked = 0 }
+local AfkCard = InterfaceTab:AddCard("Anti AFK", "Right")
+local afkStatus
+AfkCard:AddToggle({ Name = "Anti AFK", Default = true, Callback = function(v)
+    AntiAfk.Enabled = v
+    if afkStatus then afkStatus:Set(v and "Status: Protected" or "Status: Off") end
+end })
+AfkCard:AddLabel("Stay online all night. Roblox boots idle players after 20 minutes, so this quietly taps for you and keeps you in the game while you farm.")
+afkStatus = AfkCard:AddLabel("Status: Protected")
+local afkCount = AfkCard:AddLabel("Idle kicks blocked: 0")
+
+pcall(function()
+    local VirtualUser = game:GetService("VirtualUser")
+    LocalPlayer.Idled:Connect(function()
+        if not AntiAfk.Enabled then return end
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+        AntiAfk.Blocked = AntiAfk.Blocked + 1
+        afkCount:Set("Idle kicks blocked: " .. AntiAfk.Blocked)
+    end)
+end)
 
 Window:Notify({ Title = "Lazy Jiro Hub", Content = "Loaded. Press RightShift to hide or show.", Duration = 5 })

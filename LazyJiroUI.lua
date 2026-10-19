@@ -24,7 +24,7 @@ local Theme = {
     Good    = Color3.fromRGB(110, 231, 160),
 }
 
-local Lib = { Theme = Theme, Version = 5 }
+local Lib = { Theme = Theme, Version = 6 }
 
 local function New(class, props, kids)
     local o = Instance.new(class)
@@ -878,7 +878,26 @@ function Lib:CreateWindow(cfg)
         b.MouseLeave:Connect(function() Tween(b, { BackgroundColor3 = Theme.Element }, 0.15); recolor(Theme.SubText) end)
         return b
     end
-    local linkBtn = iconBtn(1, "link")
+    local liveBox = New("Frame", {
+        LayoutOrder = 1, Size = UDim2.fromOffset(32, 32), BackgroundColor3 = Theme.Element, Parent = ctrl,
+    })
+    Corner(liveBox, 10)
+    local liveGlow = New("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(20, 20),
+        BackgroundColor3 = Theme.Good, BackgroundTransparency = 0.85, Parent = liveBox,
+    })
+    Corner(liveGlow, UDim.new(0.5, 0))
+    local liveDot = New("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(10, 10),
+        BackgroundColor3 = Theme.Good, Parent = liveBox,
+    })
+    Corner(liveDot, UDim.new(0.5, 0))
+    reg(RunService.Heartbeat:Connect(function()
+        if not holder.Visible then return end
+        local pulse = (math.sin(os.clock() * 4) + 1) / 2
+        liveDot.BackgroundTransparency = 0.75 * (1 - pulse)
+        liveGlow.BackgroundTransparency = 0.95 - 0.2 * pulse
+    end))
     local hideBtn = iconBtn(2, "min")
     local closeBtn = iconBtn(3, "close", Color3.fromRGB(176, 52, 82), Color3.new(1, 1, 1))
 
@@ -975,10 +994,6 @@ function Lib:CreateWindow(cfg)
     closeBtn.MouseButton1Click:Connect(function()
         Tween(scale, { Scale = 0.01 }, 0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
         task.delay(0.22, function() Window:Destroy() end)
-    end)
-    linkBtn.MouseButton1Click:Connect(function()
-        local ok = pcall(function() setclipboard(cfg.Link or "https://github.com") end)
-        Window:Notify({ Title = ok and "Link copied" or "Link", Content = cfg.Link or "https://github.com", Duration = 3 })
     end)
     reg(UserInputService.InputBegan:Connect(function(i, gpe)
         if not gpe and i.KeyCode == Window.ToggleKey then Window:Toggle() end

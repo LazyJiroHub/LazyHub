@@ -1852,15 +1852,21 @@ do
         TrainArea = nil, TrainPending = nil, TrainEntering = false, TrainGen = 0, TrainFiredAt = 0,
         TrainRebirth = nil, TrainLevel = nil, TrainNilSince = nil,
         Opt = {
-            AutoTrain = false, AutoClick = false, ClickRate = 6, ClickPauseTyping = true,
+            AutoTrain = false, AutoClick = false, ClickTurbo = true, HyperTrain = false,
+            TrainArea = "Auto Best", GuaranteedCrit = false, DamageMultiplier = 5,
             AutoRebirth = false, AutoUpgrade = false, Upgrades = {},
         },
+        TrainUUIDs = {}, FetchingTrainUUIDs = false, Clicking = false,
     }
 
     local function unotify(text, title) notify(text, title or "Upgrade") end
 
     local function GetProfile()
         return Util.Remote("Profile", "GetTotalDataRF"):InvokeServer()
+    end
+
+    local function SelectedArea()
+        return tonumber(string.match(tostring(U.Opt.TrainArea or ""), "Area (%d+)"))
     end
 
     local function FindBestArea(gen)
@@ -1887,7 +1893,7 @@ do
             local areaId = entry.id
             if not Live() then U.TrainPending = nil; return nil end
             U.TrainPending = areaId
-            into:FireServer(areaId)
+            into:FireServer(areaId, true)
             local deadline = os.clock() + UC.TrainAcceptWait
             while Live() and os.clock() < deadline and tonumber(LocalPlayer:GetAttribute("AutoTrainAreaID")) ~= areaId do
                 task.wait(0.1)
@@ -1903,10 +1909,12 @@ do
 
     local function TrainEnter()
         if not U.Opt.AutoTrain or U.TrainEntering then return end
+        local fixed = SelectedArea()
+        if fixed then U.TrainArea = fixed end
         if U.TrainArea then
             if os.clock() - U.TrainFiredAt < UC.TrainAcceptWait then return end
             U.TrainFiredAt = os.clock()
-            Util.Remote("Train", "IntoAutoTrainRE"):FireServer(U.TrainArea)
+            Util.Remote("Train", "IntoAutoTrainRE"):FireServer(U.TrainArea, true)
             return
         end
         local gen = U.TrainGen
@@ -1921,11 +1929,13 @@ do
     end
 
     local function TrainLeave()
-        local exit = Util.Remote("Train", "ExitAutoTrainRE")
+        local exit = Util.FindRemote("Train", "ExitAutoTrainRE")
+        local into = Util.FindRemote("Train", "IntoAutoTrainRE")
+        if not (exit or into) then return end
         for _ = 1, UC.TrainExitTries do
             local areaId = LocalPlayer:GetAttribute("AutoTrainAreaID") or U.TrainPending or U.TrainArea
             if not areaId then return end
-            exit:FireServer(areaId)
+            if exit then exit:FireServer(areaId) else into:FireServer(areaId, false) end
             if not U.Alive then
                 U.TrainPending = nil
                 return
@@ -1966,7 +1976,14 @@ do
             U.TrainLevel = profile.Eco.level
             U.TrainArea = nil
         end
-        if LocalPlayer:GetAttribute("AutoTrainAreaID") then
+        local current = tonumber(LocalPlayer:GetAttribute("AutoTrainAreaID"))
+        local fixed = SelectedArea()
+        if current and fixed and current ~= fixed then
+            U.TrainNilSince = nil
+            TrainEnter()
+            return
+        end
+        if current then
             U.TrainNilSince = nil
             return
         end
@@ -1984,23 +2001,78 @@ do
         end)
     end))
 
-    local function Humanoid()
-        return LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    local function CurrentArea()
+        return SelectedArea() or U.TrainArea or tonumber(LocalPlayer:GetAttribute("AutoTrainAreaID")) or 9
     end
 
-    local function ClickOnce()
-        GameLib.Api(ReplicatedStorage.CTRL.TrainCTRL).TrainOnce()
+    local function RefillTrainUUIDs()
+        if U.FetchingTrainUUIDs then return end
+        U.FetchingTrainUUIDs = true
+        task.spawn(function()
+            pcall(function()
+                local rf = Util.FindRemote("Train", "InvokTrainDataListRF")
+                local encoding = rf and GameLib.Require(ReplicatedStorage.Utils.EncodingUtils)
+                if not (rf and encoding) then return end
+                for _ = 1, 2 do
+                    local ok, raw = pcall(rf.InvokeServer, rf, CurrentArea())
+                    local list = ok and raw and encoding.DecodeTable(raw)
+                    if type(list) == "table" then
+                        for _, item in ipairs(list) do
+                            if item.UUID then table.insert(U.TrainUUIDs, item.UUID) end
+                        end
+                    end
+                end
+            end)
+            U.FetchingTrainUUIDs = false
+        end)
     end
 
-    local function CanClick()
-        if not U.Alive or not U.Opt.AutoClick then return false end
-        local hum = Humanoid()
-        if not hum or hum.Health <= 0 then return false end
-        if U.Opt.ClickPauseTyping then
-            local ok, focused = pcall(UserInputService.GetFocusedTextBox, UserInputService)
-            if ok and focused then return false end
+    local function PopTrainUUID()
+        if #U.TrainUUIDs < 250 then RefillTrainUUIDs() end
+        return table.remove(U.TrainUUIDs, 1)
+    end
+
+    local function ClickBurst(count)
+        count = count or (U.Opt.ClickTurbo and 50 or 15)
+        local trainOnce = Util.FindRemote("Train", "TrainOnceRE")
+        local into = Util.FindRemote("Train", "IntoAutoTrainRE")
+        if into and not LocalPlayer:GetAttribute("AutoTrainAreaID") then
+            pcall(into.FireServer, into, CurrentArea(), true)
         end
-        return true
+        if not trainOnce then return end
+        for _ = 1, count do
+            local uuid = PopTrainUUID()
+            if not uuid then break end
+            trainOnce:FireServer(uuid)
+        end
+        LocalPlayer:SetAttribute("LastTrainTick", tick())
+    end
+
+    local function StartClicking()
+        if U.Clicking then return end
+        U.Clicking = true
+        task.spawn(function()
+            local trainOnce = Util.FindRemote("Train", "TrainOnceRE")
+            local into = Util.FindRemote("Train", "IntoAutoTrainRE")
+            local lastEnter = 0
+            while U.Alive and U.Opt.AutoClick do
+                pcall(function()
+                    if into and not U.Opt.AutoTrain and not LocalPlayer:GetAttribute("AutoTrainAreaID") and os.clock() - lastEnter > UC.TrainAcceptWait then
+                        lastEnter = os.clock()
+                        into:FireServer(CurrentArea(), true)
+                    end
+                    local batch = U.Opt.HyperTrain and 50 or (U.Opt.ClickTurbo and 25 or 10)
+                    for _ = 1, batch do
+                        local uuid = PopTrainUUID()
+                        if not (uuid and trainOnce) then break end
+                        trainOnce:FireServer(uuid)
+                    end
+                    LocalPlayer:SetAttribute("LastTrainTick", tick())
+                end)
+                task.wait(U.Opt.HyperTrain and 0.01 or (U.Opt.ClickTurbo and 0.02 or 0.08))
+            end
+            U.Clicking = false
+        end)
     end
 
     local function Rebirth()
@@ -2067,11 +2139,65 @@ do
         end)
     end
 
-    local TrainCard = UpgradeTab:AddCard("Training", "Left")
+    local TrainCard = UpgradeTab:AddCard("Training", "Left", "OP")
     local UpgradeCard = UpgradeTab:AddCard("Upgrades", "Right")
 
+    local RestoreCalc
+    local function HookCalc()
+        if RestoreCalc then return true end
+        local utils = ReplicatedStorage:FindFirstChild("Utils")
+        local module = utils and utils:FindFirstChild("CalculateUtils")
+        local calc = module and GameLib.Require(module)
+        if type(calc) ~= "table" then return false end
+
+        local origCrit, origDamage, origOnce = calc.CCCrit, calc.CCPlrDamage, calc.CCPlrOnceDamage
+
+        if type(origCrit) == "function" then
+            calc.CCCrit = function(player, ...)
+                if player == LocalPlayer and U.Opt.GuaranteedCrit then return 1.0 end
+                return origCrit(player, ...)
+            end
+        end
+        if type(origDamage) == "function" then
+            calc.CCPlrDamage = function(player, ...)
+                local dmg = origDamage(player, ...)
+                local mult = U.Opt.DamageMultiplier
+                if player == LocalPlayer and type(dmg) == "number" and mult and mult > 1 then return dmg * mult end
+                return dmg
+            end
+        end
+        if type(origOnce) == "function" then
+            calc.CCPlrOnceDamage = function(player, ...)
+                local dmg = origOnce(player, ...)
+                local mult = U.Opt.DamageMultiplier
+                if player == LocalPlayer and type(dmg) == "number" and mult and mult > 1 then return dmg * mult end
+                return dmg
+            end
+        end
+
+        RestoreCalc = function()
+            if type(origCrit) == "function" then calc.CCCrit = origCrit end
+            if type(origDamage) == "function" then calc.CCPlrDamage = origDamage end
+            if type(origOnce) == "function" then calc.CCPlrOnceDamage = origOnce end
+            RestoreCalc = nil
+        end
+        return true
+    end
+
+    local function UnhookCalc()
+        if RestoreCalc then RestoreCalc() end
+    end
+
+    local function AddCheck(card, spec)
+        if card.AddCheckbox then
+            local ok, obj = pcall(card.AddCheckbox, card, spec)
+            if ok and obj then return obj end
+        end
+        return card:AddToggle(spec)
+    end
+
     U.Toggles.AutoTrain = TrainCard:AddToggle({
-        Name = "Auto Train", Description = "Trains at the best area nonstop and drinks your potions", Default = false,
+        Name = "Auto Train", Description = "Trains at selected or best area nonstop and uses potions", Default = false,
         Callback = function(v)
             U.Opt.AutoTrain = v
             U.Fails.AutoTrain = nil
@@ -2080,41 +2206,66 @@ do
         end,
     })
 
+    TrainCard:AddDropdown({
+        Name = "Train Area", Stacked = true,
+        Options = {
+            "Auto Best",
+            "Area 9 (x100 Throne)",
+            "Area 8 (25x)",
+            "Area 7 (15x)",
+            "Area 6 (10x)",
+            "Area 5 (8x)",
+            "Area 4 (6x)",
+            "Area 3 (4x)",
+            "Area 2 (2x)",
+            "Area 1 (1.5x)",
+        },
+        Default = "Auto Best",
+        Callback = function(v)
+            U.Opt.TrainArea = v
+            U.TrainArea = nil
+            U.TrainFiredAt = 0
+            table.clear(U.TrainUUIDs)
+            if U.Opt.AutoTrain then task.spawn(Util.Try, TrainEnter) end
+        end,
+    })
+
     U.Toggles.AutoClick = TrainCard:AddToggle({
-        Name = "Auto Click", Description = "Steady training clicks; pauses while typing or respawning", Default = false,
+        Name = "Auto Click", Description = "Clicks to train with maximum burst speed", Default = false,
         Callback = function(v)
             U.Opt.AutoClick = v
             U.Fails.AutoClick = nil
             if not v then return end
-            local ok = pcall(function() return GameLib.Need(ReplicatedStorage.CTRL.TrainCTRL) end)
-            if not ok then
+            if not Util.FindRemote("Train", "TrainOnceRE") then
                 U.Opt.AutoClick = false
                 U.Toggles.AutoClick:Set(false, true)
-                unotify("Auto Click is not available on this executor", "Warning")
+                unotify("Auto Click is not available (TrainOnceRE not found)", "Warning")
                 return
             end
-            StartLoop("AutoClick", function() return 1 / math.clamp(tonumber(U.Opt.ClickRate) or 6, 1, 25) end, function()
-                if CanClick() then ClickOnce() end
-            end)
+            StartClicking()
         end,
     })
 
-    TrainCard:AddSlider({ Name = "Clicks per second", Min = 1, Max = 25, Default = 6, Increment = 1, Callback = function(v)
-        U.Opt.ClickRate = v
+    AddCheck(TrainCard, { Name = "Turbo Training Burst (20x)", Default = true, Callback = function(v)
+        U.Opt.ClickTurbo = v
     end })
 
-    TrainCard:AddToggle({ Name = "Pause while typing", Default = true, Callback = function(v)
-        U.Opt.ClickPauseTyping = v
+    AddCheck(TrainCard, { Name = "Hyper-Speed Mode (50x Stream)", Default = false, Callback = function(v)
+        U.Opt.HyperTrain = v
     end })
 
-    U.Toggles.AutoRebirth = TrainCard:AddToggle({
-        Name = "Auto Rebirth", Description = "Rebirths as soon as your level is high enough", Default = false,
+    U.Toggles.AutoRebirth = AddCheck(TrainCard, {
+        Name = "Auto Rebirth When Ready", Default = false,
         Callback = function(v)
             U.Opt.AutoRebirth = v
             U.Fails.AutoRebirth = nil
             if v then StartLoop("AutoRebirth", function() return UC.RebirthInterval end, RebirthStep) end
         end,
     })
+
+    TrainCard:AddButton({ Name = "Train Click Now", Primary = true, Callback = function()
+        task.spawn(Util.Try, ClickBurst, 20)
+    end })
 
     TrainCard:AddButton({ Name = "Rebirth Now", Primary = false, Callback = function()
         task.spawn(function()
@@ -2126,6 +2277,31 @@ do
                 unotify("Rebirth sent")
             end
         end)
+    end })
+
+    U.Toggles.GuaranteedCrit = TrainCard:AddToggle({
+        Name = "Guaranteed Crit (100%)", Description = "Guarantees critical hits on every attack and training hit", Default = false,
+        Callback = function(v)
+            U.Opt.GuaranteedCrit = v
+            if v then
+                if not HookCalc() then
+                    U.Opt.GuaranteedCrit = false
+                    U.Toggles.GuaranteedCrit:Set(false, true)
+                    unotify("Guaranteed Crit is not available on this executor", "Warning")
+                end
+            elseif not (U.Opt.DamageMultiplier and U.Opt.DamageMultiplier > 1) then
+                UnhookCalc()
+            end
+        end,
+    })
+
+    TrainCard:AddSlider({ Name = "Damage Multiplier", Min = 1, Max = 20, Default = 5, Increment = 1, Suffix = "x", Callback = function(v)
+        U.Opt.DamageMultiplier = tonumber(v) or 5
+        if U.Opt.DamageMultiplier > 1 then
+            if not HookCalc() then unotify("Damage Multiplier is not available on this executor", "Warning") end
+        elseif not U.Opt.GuaranteedCrit then
+            UnhookCalc()
+        end
     end })
 
     local upgradeDropdown = UpgradeCard:AddDropdown({
@@ -2173,10 +2349,915 @@ do
 
     Window.reg({ Disconnect = function()
         U.Alive = false
+        UnhookCalc()
         if U.Opt.AutoTrain then
             U.Opt.AutoTrain = false
             task.spawn(Util.Try, TrainLeave)
         end
+    end })
+end
+
+local PetEggTab = ForgePage:AddTab("Pet and Egg")
+do
+    local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
+
+    local PS = {
+        Alive = true, Busy = nil, Profile = nil, ProfileTime = 0, TargetLabels = {}, RarityLv = {},
+        Opt = {
+            SkipEggAnim = true, Protected = { Legendary = true, Mythic = true, Eternal = true },
+            KeepPerEgg = 10, KeepBestPets = 6, AutoLockTargetPet = true, HatchBestFirst = true, TargetPet = nil,
+        },
+    }
+
+    local function pnotify(text) notify(text, "Pets & Eggs") end
+
+    local function R(folder, name)
+        local root = ReplicatedStorage:FindFirstChild("Remote")
+        local holder = root and (root:FindFirstChild(folder .. "_Server") or root:FindFirstChild(folder))
+        local direct = holder and holder:FindFirstChild(name)
+        return direct or Util.Remote(folder, name)
+    end
+
+    local function FR(folder, name)
+        local root = ReplicatedStorage:FindFirstChild("Remote")
+        local holder = root and (root:FindFirstChild(folder .. "_Server") or root:FindFirstChild(folder))
+        local direct = holder and holder:FindFirstChild(name)
+        return direct or Util.FindRemote(folder, name)
+    end
+
+    local function GetProfile(force)
+        local now = os.clock()
+        if not force and PS.Profile and now - PS.ProfileTime < 0.35 then return PS.Profile end
+        local ok, profile = pcall(function() return R("Profile", "GetTotalDataRF"):InvokeServer() end)
+        if ok and type(profile) == "table" then
+            PS.Profile, PS.ProfileTime = profile, now
+            return profile
+        end
+        if PS.Profile then return PS.Profile end
+        error("profile unavailable; retry after loading", 0)
+    end
+
+    local function ToSet(set)
+        local out = {}
+        for key, value in pairs(set or {}) do
+            if type(key) == "number" then out[value] = true elseif value then out[key] = true end
+        end
+        return out
+    end
+
+    local function ServerNow()
+        return (workspace.GetServerTimeNow and workspace:GetServerTimeNow()) or (workspace:GetAttribute("ServerTime") or os.time())
+    end
+
+    local function RarityLevel(rarity)
+        if rarity == nil then return 0 end
+        local cached = PS.RarityLv[rarity]
+        if cached then return cached end
+        local ok, level = pcall(function() return GameLib.Api(Cfg().Rarity.Helper).GetRarityLevel(rarity) end)
+        level = ok and tonumber(level) or 0
+        PS.RarityLv[rarity] = level
+        return level
+    end
+
+    local function Parallel(workers, job)
+        local pending, failure = workers, nil
+        for _ = 1, workers do
+            task.spawn(function()
+                local ok, err = pcall(job)
+                if not ok then failure = failure or err end
+                pending -= 1
+            end)
+        end
+        local deadline = os.clock() + 20
+        while PS.Alive and pending > 0 and os.clock() < deadline do task.wait(0.05) end
+        if failure then error(failure, 0) end
+    end
+
+    local function EquippedSet(petStore)
+        local set = {}
+        for _, uuid in pairs(petStore.equiped or {}) do set[uuid] = true end
+        return set
+    end
+
+    -- Season coins and tower (used by the Event pet draws and rainbow crafts)
+    local function SeasonCurrent(profile)
+        local seasons = (profile or GetProfile()).Season or {}
+        local active = workspace:GetAttribute("Season")
+        if active and type(seasons[active]) == "table" then return seasons[active] end
+        if type(seasons.Season2) == "table" then return seasons.Season2 end
+        if type(seasons.Season1) == "table" then return seasons.Season1 end
+        if seasons.Coin or seasons.SeasonCoin then return seasons end
+        local bestKey, bestTier = nil, -1
+        for key in pairs(seasons) do
+            local tier = Util.Tier(key)
+            if tier > bestTier then bestKey, bestTier = key, tier end
+        end
+        return bestKey and seasons[bestKey] or seasons
+    end
+
+    local function SeasonCoins(force)
+        local season = SeasonCurrent(force and GetProfile(true) or nil)
+        return type(season) == "table" and (season.Coin or season.SeasonCoin or 0) or 0
+    end
+
+    local function FarmCoins(target)
+        target = math.clamp(target or 10000, 100, 1000000)
+        local startCoin = SeasonCoins(true)
+        local rounds = math.clamp(math.ceil(target / 8000), 1, 100)
+        pcall(function() R("Dungeon", "TryIntoDungeonRF"):InvokeServer(true, 50) end)
+        local startRE = R("Dungeon", "StartRoundRE")
+        local completeRF = R("Dungeon", "CompleteRoundRF")
+        for round = 1, rounds do
+            if not PS.Alive then break end
+            pcall(startRE.FireServer, startRE, 50)
+            task.wait(0.04)
+            pcall(completeRF.InvokeServer, completeRF, 50)
+            if round % 3 == 0 and SeasonCoins(true) - startCoin >= target then break end
+        end
+        if not State.Running then
+            pcall(function() R("Dungeon", "TryIntoDungeonRF"):InvokeServer(false) end)
+        end
+        return math.max(0, SeasonCoins(true) - startCoin)
+    end
+
+    -- Pet data helpers
+    local function PetStoreOf(refresh)
+        local profile = GetProfile(refresh)
+        return profile and profile.Pet or {}
+    end
+
+    local function PetRarity(petId)
+        local cfg = GameLib.Need(Cfg().Pet.Config)[petId]
+        return cfg and cfg.Rarity
+    end
+
+    local function PetScore(entry, focus)
+        if type(entry) ~= "table" or entry.Type ~= "Pet" then return -1 end
+        local cfg = GameLib.Need(Cfg().Pet.Config)[entry.ID]
+        if not cfg then return 0 end
+        local rarityLv = RarityLevel(cfg.Rarity)
+        local gradeMulti = ({ Common = 1, Golden = 2, Diamond = 4, Rainbow = 6 })[entry.Grade] or 1
+        local boostSum, trainBoost = 0, 0
+        local ok, boosts = pcall(function()
+            return GameLib.Api(ReplicatedStorage.Utils.BalanceUtils).GetPetBoosts(LocalPlayer, entry)
+        end)
+        if ok and type(boosts) == "table" then
+            trainBoost = boosts.Train or 0
+            for _, val in pairs(boosts) do
+                if type(val) == "number" then boostSum += val end
+            end
+        end
+        if focus == "Train" then
+            return trainBoost * 100000 + gradeMulti * 1000 + (entry.Level or 1) * 10
+        end
+        local skills = type(entry.ExtraSkill) == "table" and #entry.ExtraSkill or 0
+        return rarityLv * 10000 + boostSum * gradeMulti * 1000 + (entry.Level or 1) * 10 + skills * 500 + Util.Tier(entry.ID)
+    end
+
+    local function ResetVFX()
+        pcall(function()
+            local gui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            local openGui = gui and gui:FindFirstChild("OpenEggGui")
+            if openGui and openGui.Enabled then
+                local guiUtils = ReplicatedStorage:FindFirstChild("GuiUtils")
+                local petGui = guiUtils and guiUtils:FindFirstChild("PetGUI")
+                local vfx = petGui and petGui:FindFirstChild("OpenEggVFX")
+                if vfx then GameLib.Api(vfx).Reset() end
+            end
+        end)
+    end
+
+    local function MuteAnim(muted)
+        if type(getconnections) == "function" then
+            pcall(function()
+                local remote = FR("Pet", "ShowLuckResult")
+                if remote and remote:IsA("RemoteEvent") then
+                    for _, conn in ipairs(getconnections(remote.OnClientEvent)) do
+                        if muted then conn:Disable() else conn:Enable() end
+                    end
+                end
+            end)
+        end
+        if muted then ResetVFX() end
+    end
+
+    local function CountsOf(petStore)
+        petStore = petStore or PetStoreOf()
+        local pets, eggs = 0, 0
+        for _, entry in pairs(petStore.have or {}) do
+            if entry.Type == "Pet" then
+                pets += 1
+            elseif entry.Type == "Egg" and not entry.HatchReadyTick then
+                eggs += 1
+            end
+        end
+        return pets, eggs
+    end
+
+    local function TrimEggs(preferEggId)
+        local petStore = PetStoreOf()
+        local byId, totalEggs = {}, 0
+        for uuid, entry in pairs(petStore.have or {}) do
+            if entry.Type == "Egg" and not entry.HatchReadyTick then
+                byId[entry.ID] = byId[entry.ID] or {}
+                table.insert(byId[entry.ID], uuid)
+                totalEggs += 1
+            end
+        end
+        local deleteRE = R("Pet", "DeleteRE")
+        local deleted = 0
+        local keepLimit = math.max(1, PS.Opt.KeepPerEgg or 10)
+        local maxEggs = petStore.maxEggNum or 25
+        for eggId, list in pairs(byId) do
+            local limit = keepLimit
+            if preferEggId and eggId ~= preferEggId and totalEggs >= maxEggs - 3 then
+                limit = math.min(limit, math.max(2, math.floor(maxEggs / 4)))
+            end
+            for i = limit + 1, #list do
+                deleteRE:FireServer(list[i])
+                deleted += 1
+                totalEggs -= 1
+            end
+        end
+        if deleted > 0 then GetProfile(true) end
+        return deleted
+    end
+
+    -- Stage farming for eggs and fruits
+    local function DropInfo(drop)
+        local id = type(drop) == "table" and drop.ID or drop
+        local dtype = type(drop) == "table" and drop.Type
+        if not dtype then
+            dtype = type(id) == "string" and (id:find("^Egg") and "Egg" or (id:find("^Food") and "Food")) or "Ore"
+        end
+        return id, dtype
+    end
+
+    local function FarmEggsAndFood(rounds)
+        rounds = math.clamp(rounds or 25, 1, 100)
+        local finished = R("Stage", "StageFinishedRF")
+        local getOre = R("Stage", "GetOreRF")
+        local pickStone = R("Stage", "GetEnhantStoneRE")
+        local claimAll = R("Stage", "ClaimedAllOreRE")
+        local eggs, foods = 0, 0
+        TrimEggs("Egg2")
+        Parallel(24, function()
+            for _ = 1, rounds do
+                if not PS.Alive then break end
+                local drops = finished:InvokeServer("Stage_27")
+                if type(drops) == "table" then
+                    for uuid, drop in pairs(drops) do
+                        local _, dtype = DropInfo(drop)
+                        if dtype == "Material" then
+                            pickStone:FireServer(uuid)
+                        elseif dtype == "Egg" then
+                            if getOre:InvokeServer(uuid, true) then eggs += 1 end
+                        elseif dtype == "Food" then
+                            if getOre:InvokeServer(uuid, true) then foods += 1 end
+                        end
+                    end
+                end
+            end
+        end)
+        claimAll:FireServer()
+        GetProfile(true)
+        return eggs, foods
+    end
+
+    local function FarmTargetEggs(eggId, needed)
+        needed = math.clamp(math.floor(needed or 1), 1, 1000)
+        local stageId = eggId == "Egg1" and "Stage_11" or "Stage_27"
+        local finished = R("Stage", "StageFinishedRF")
+        local getOre = R("Stage", "GetOreRF")
+        local pickStone = R("Stage", "GetEnhantStoneRE")
+        local claimAll = R("Stage", "ClaimedAllOreRE")
+        local got = 0
+        local wasFight = LocalPlayer:GetAttribute("IntoFight")
+        if wasFight ~= "Stage" then LocalPlayer:SetAttribute("IntoFight", "Stage") end
+        TrimEggs(eggId)
+        local deadline = os.clock() + 12
+        Parallel(16, function()
+            while PS.Alive and got < needed and os.clock() < deadline do
+                local drops = finished:InvokeServer(stageId)
+                if type(drops) ~= "table" then break end
+                for uuid, drop in pairs(drops) do
+                    if got >= needed then break end
+                    local id, dtype = DropInfo(drop)
+                    if dtype == "Material" then
+                        pickStone:FireServer(uuid)
+                    elseif id == eggId then
+                        if getOre:InvokeServer(uuid, true) ~= false then got += 1 end
+                    end
+                end
+            end
+        end)
+        claimAll:FireServer()
+        if wasFight ~= "Stage" then LocalPlayer:SetAttribute("IntoFight", wasFight) end
+        GetProfile(true)
+        return got
+    end
+
+    -- Pets
+    local function CleanBag(trimEggs)
+        local petStore = PetStoreOf()
+        local protected = EquippedSet(petStore)
+        local allPets = {}
+        for uuid, entry in pairs(petStore.have or {}) do
+            if entry.Type == "Pet" then
+                if entry.DeployStartTick or entry.Lock or entry.Locked then protected[uuid] = true end
+                table.insert(allPets, { uuid = uuid, entry = entry, score = PetScore(entry) })
+            end
+        end
+        table.sort(allPets, function(a, b) return a.score > b.score end)
+        for i = 1, math.min(#allPets, math.max(1, PS.Opt.KeepBestPets or 6)) do
+            protected[allPets[i].uuid] = true
+        end
+        local deleteRE = R("Pet", "DeleteRE")
+        local deletedPets = 0
+        for _, item in ipairs(allPets) do
+            local rarity = PetRarity(item.entry.ID)
+            if not protected[item.uuid] and not PS.Opt.Protected[rarity] then
+                deleteRE:FireServer(item.uuid)
+                deletedPets += 1
+            end
+        end
+        local deletedEggs = trimEggs and TrimEggs() or 0
+        if deletedPets > 0 then GetProfile(true) end
+        return deletedPets, deletedEggs
+    end
+
+    local function TargetEggFor(petId)
+        local eggCfg = GameLib.Need(Cfg().Egg.Config)
+        for eggId, data in pairs(eggCfg or {}) do
+            if type(data) == "table" and data.Loot and data.Loot[petId] then return eggId end
+        end
+        return "Egg2"
+    end
+
+    local function EquipBest(focus)
+        local petStore = PetStoreOf()
+        local owned = {}
+        for uuid, entry in pairs(petStore.have or {}) do
+            if entry.Type == "Pet" then
+                table.insert(owned, { uuid = uuid, score = PetScore(entry, focus) })
+            end
+        end
+        if #owned == 0 then return 0 end
+        table.sort(owned, function(a, b) return a.score > b.score end)
+
+        local maxEquip = petStore.maxEquipNum or 1
+        local wanted, wantedList = {}, {}
+        for i = 1, math.min(maxEquip, #owned) do
+            wanted[owned[i].uuid] = owned[i].score
+            table.insert(wantedList, owned[i])
+        end
+        local currentSet = EquippedSet(petStore)
+        local equipRE = R("Pet", "IsEquipPetRE")
+        local changed = 0
+        for uuid in pairs(table.clone(currentSet)) do
+            if not wanted[uuid] then
+                local entry = petStore.have and petStore.have[uuid]
+                local curScore = entry and PetScore(entry, focus) or -1
+                local best = wantedList[1]
+                if best and best.score > curScore then
+                    equipRE:FireServer(uuid, false)
+                    currentSet[uuid] = nil
+                end
+            end
+        end
+        for _, item in ipairs(wantedList) do
+            if not currentSet[item.uuid] then
+                equipRE:FireServer(item.uuid, true)
+                changed += 1
+            end
+        end
+        if changed > 0 then GetProfile(true) end
+        return changed
+    end
+
+    local function FeedBest()
+        local profile = GetProfile()
+        local petStore = profile.Pet or {}
+        local foodCfg = GameLib.Need(Cfg().Food.Config)
+        local petHelper = GameLib.Api(Cfg().Pet.Helper)
+        local foods = {}
+        for uuid, entry in pairs(profile.Backpack.have or {}) do
+            local count = math.floor(entry.Number or 0)
+            local info = entry.Type == "Food" and foodCfg[entry.ID]
+            if info and count >= 1 and (info.Exp or 0) > 0 then
+                table.insert(foods, { uuid = uuid, count = count, exp = info.Exp })
+            end
+        end
+        if #foods == 0 then return 0 end
+        table.sort(foods, function(a, b) return a.exp > b.exp end)
+
+        local equipped = EquippedSet(petStore)
+        local targets = {}
+        for uuid, entry in pairs(petStore.have or {}) do
+            if entry.Type == "Pet" and not petHelper.CheckLevelIsMax(entry.Level or 1, entry.ID) then
+                local priority = (equipped[uuid] and 1e9 or 0) + (entry.DeployStartTick and 1e8 or 0) + PetScore(entry)
+                table.insert(targets, { uuid = uuid, entry = entry, priority = priority })
+            end
+        end
+        if #targets == 0 then return 0 end
+        table.sort(targets, function(a, b) return a.priority > b.priority end)
+
+        local target = targets[1]
+        local maxLv = petHelper.GetMaxLevel(target.entry.ID) or 20
+        local needExp = -(target.entry.Exp or 0)
+        for lv = (target.entry.Level or 1) + 1, maxLv do
+            needExp += (petHelper.GetNeedExp(lv) or 0)
+        end
+        if needExp <= 0 then return 0 end
+
+        local feedMap, used = {}, false
+        for _, food in ipairs(foods) do
+            if needExp <= 0 then break end
+            local use = math.min(food.count, math.max(1, math.ceil(needExp / food.exp)))
+            if use > 0 then
+                feedMap[food.uuid] = use
+                needExp -= use * food.exp
+                used = true
+            end
+        end
+        if not used then return 0 end
+        R("Pet", "FeedPetRE"):FireServer(target.uuid, feedMap)
+        GetProfile(true)
+        return 1
+    end
+
+    local function FeedAllMax()
+        local total = 0
+        for _ = 1, 15 do
+            local fed = FeedBest()
+            if fed <= 0 then break end
+            total += fed
+            task.wait(0.05)
+        end
+        return total
+    end
+
+    local function HatchStep()
+        if PS.Opt.SkipEggAnim then MuteAnim(true) end
+        local petStore = PetStoreOf()
+        local now = ServerNow()
+        local petCount = CountsOf(petStore)
+        local maxPet = petStore.maxPetNum or 25
+
+        if petCount >= maxPet - 2 then
+            CleanBag(false)
+            petStore = PetStoreOf(true)
+            petCount = CountsOf(petStore)
+        end
+
+        local openRE = R("Pet", "TryOpenEggRE")
+        local hatchRE = R("Pet", "TryHatchEggRE")
+        local opened = 0
+        for _, uuid in pairs(petStore.hatched or {}) do
+            local entry = petStore.have and petStore.have[uuid]
+            if entry and (entry.HatchReadyTick or 0) <= now and petCount + opened < maxPet then
+                openRE:FireServer(uuid)
+                opened += 1
+            end
+        end
+        if opened > 0 then
+            ResetVFX()
+            petStore = PetStoreOf(true)
+        end
+
+        local usedSlots = 0
+        for _ in pairs(petStore.hatched or {}) do usedSlots += 1 end
+        local freeSlots = math.max(0, (petStore.maxHatchNum or 3) - usedSlots)
+        local hatched = 0
+        if freeSlots > 0 then
+            local targetEggId = "Egg2"
+            local pickedPet = PS.Opt.TargetPet and PS.TargetLabels[PS.Opt.TargetPet]
+            if pickedPet then targetEggId = TargetEggFor(pickedPet) end
+
+            local candidates = {}
+            for uuid, entry in pairs(petStore.have or {}) do
+                if entry.Type == "Egg" and not entry.HatchReadyTick then
+                    table.insert(candidates, { uuid = uuid, isTarget = entry.ID == targetEggId, tier = Util.Tier(entry.ID) })
+                end
+            end
+            table.sort(candidates, function(a, b)
+                if a.isTarget ~= b.isTarget then return a.isTarget end
+                if PS.Opt.HatchBestFirst then return a.tier > b.tier end
+                return a.tier < b.tier
+            end)
+            for i = 1, math.min(freeSlots, #candidates) do
+                hatchRE:FireServer(candidates[i].uuid)
+                hatched += 1
+            end
+        end
+        if hatched > 0 or opened > 0 then
+            GetProfile(true)
+            ResetVFX()
+        end
+        return opened, hatched
+    end
+
+    local function DeployStep()
+        local petStore = PetStoreOf()
+        local claimed = false
+        if type(petStore.deployRewardList) == "table" and next(petStore.deployRewardList) ~= nil then
+            R("Pet", "ClaimAllDeployRewardRE"):FireServer()
+            claimed = true
+        end
+        local deployedCount, candidates = 0, {}
+        for uuid, entry in pairs(petStore.have or {}) do
+            if entry.Type == "Pet" then
+                if entry.DeployStartTick then
+                    deployedCount += 1
+                else
+                    table.insert(candidates, { uuid = uuid, score = PetScore(entry) })
+                end
+            end
+        end
+        local freeSlots = (petStore.maxDeployNum or 2) - deployedCount
+        local deployed = 0
+        if freeSlots > 0 and #candidates > 0 then
+            table.sort(candidates, function(a, b) return a.score > b.score end)
+            local deployRE = R("Pet", "IsDeployPetRE")
+            for i = 1, math.min(freeSlots, #candidates) do
+                deployRE:FireServer(candidates[i].uuid, true)
+                deployed += 1
+            end
+        end
+        if deployed > 0 or claimed then GetProfile(true) end
+        return claimed, deployed
+    end
+
+    local function LockAllHighTier()
+        local petStore = PetStoreOf(true)
+        local lockRE = R("Pet", "SetUUIDLockRE")
+        local equipped = EquippedSet(petStore)
+        local locked = 0
+        for uuid, entry in pairs(petStore.have or {}) do
+            if entry.Type == "Pet" and not (entry.Lock or entry.Locked) then
+                if RarityLevel(PetRarity(entry.ID)) >= 4 or equipped[uuid] then
+                    lockRE:FireServer(uuid)
+                    locked += 1
+                end
+            end
+        end
+        return locked
+    end
+
+    local function GradeUpAll()
+        local gradeLevel = { Common = 0, Golden = 1, Diamond = 2, Rainbow = 3 }
+        local upgradeRF = FR("Pet", "TryUpGradePetRF")
+        if not upgradeRF then return 0 end
+        local unlockRE = R("Pet", "SetUUIDLockRE")
+        local petStore = PetStoreOf(true)
+        local equipped = EquippedSet(petStore)
+        local upgraded = 0
+        for _, target in ipairs({ { "Golden", 1 }, { "Diamond", 2 }, { "Rainbow", 3 } }) do
+            petStore = PetStoreOf(true)
+            local byId = {}
+            for uuid, entry in pairs(petStore.have or {}) do
+                if entry.Type == "Pet" and not equipped[uuid] and (gradeLevel[entry.Grade or "Common"] or 0) == target[2] - 1 then
+                    byId[entry.ID] = byId[entry.ID] or {}
+                    table.insert(byId[entry.ID], uuid)
+                end
+            end
+            for _, uuids in pairs(byId) do
+                while #uuids >= 5 do
+                    local batch = {}
+                    for i = 1, 5 do
+                        local u = uuids[i]
+                        batch[u] = true
+                        local item = petStore.have and petStore.have[u]
+                        if item and (item.Lock or item.Locked) then unlockRE:FireServer(u) end
+                    end
+                    local ok, res = pcall(function() return upgradeRF:InvokeServer(batch, target[1]) end)
+                    if ok and res == true then upgraded += 1 end
+                    for _ = 1, 5 do table.remove(uuids, 1) end
+                    task.wait(0.04)
+                end
+            end
+        end
+        if upgraded > 0 then
+            GetProfile(true)
+            EquipBest()
+            FeedAllMax()
+        end
+        return upgraded
+    end
+
+    local function EventDraw(count, onPet)
+        local rf = R("Season", "LuckPetRF")
+        local deleteRE = R("Pet", "DeleteRE")
+        local lockRE = R("Pet", "SetUUIDLockRE")
+        local equipRE = R("Pet", "IsEquipPetRE")
+        for _ = 1, count do
+            if not PS.Alive then break end
+            local store = PetStoreOf(true)
+            local slots = 0
+            for _, it in pairs(store.have or {}) do
+                if it.Type == "Pet" or it.Type == "Egg" then slots += 1 end
+            end
+            if slots >= 21 then
+                local equipped = EquippedSet(store)
+                for u, it in pairs(store.have or {}) do
+                    if not (it.Lock or it.Locked) and not equipped[u] then
+                        if it.Type == "Egg" or it.ID == "Event1_1" or it.ID == "Event1_2" then deleteRE:FireServer(u) end
+                    end
+                end
+                task.wait(0.2)
+            end
+            local ok, petId = pcall(function() return rf:InvokeServer() end)
+            if ok and petId and onPet then onPet(petId, lockRE, equipRE) end
+            task.wait(0.02)
+        end
+    end
+
+    local function FarmAndHatchTarget(petId, needed)
+        needed = math.max(1, math.floor(needed or 1))
+        if petId:find("^Event1") then
+            local acquired = 0
+            local deadline = os.clock() + 30
+            while PS.Alive and acquired < needed and os.clock() < deadline do
+                if SeasonCoins(true) < 400 then FarmCoins(2000) end
+                EventDraw(1, function(drawn, lockRE, equipRE)
+                    if petId == "Event1" or drawn == petId then acquired += 1 end
+                    if drawn == "Event1_4" or drawn == petId then
+                        task.wait(0.2)
+                        for u, it in pairs(PetStoreOf(true).have or {}) do
+                            if it.ID == drawn and not (it.Lock or it.Locked) then
+                                lockRE:FireServer(u)
+                                if drawn == "Event1_4" then equipRE:FireServer(u, true) end
+                            end
+                        end
+                    end
+                end)
+            end
+            EquipBest()
+            FeedAllMax()
+            return acquired, acquired > 0 and ("Acquired %d %s from the season draw"):format(acquired, petId) or "Season draw timed out"
+        end
+
+        local eggId = TargetEggFor(petId)
+        local store = PetStoreOf(true)
+        local eggCount = 0
+        for _, entry in pairs(store.have or {}) do
+            if entry.Type == "Egg" and entry.ID == eggId and not entry.HatchReadyTick then eggCount += 1 end
+        end
+        if eggCount < 5 then FarmTargetEggs(eggId, 15) end
+        HatchStep()
+
+        store = PetStoreOf(true)
+        local minLeft = math.huge
+        for _, u in pairs(store.hatched or {}) do
+            local it = store.have and store.have[u]
+            if it and it.HatchReadyTick then minLeft = math.min(minLeft, math.max(0, it.HatchReadyTick - ServerNow())) end
+        end
+        local gained = 0
+        for uuid, entry in pairs(store.have or {}) do
+            if entry.Type == "Pet" and entry.ID == petId then
+                gained += 1
+                if PS.Opt.AutoLockTargetPet and not (entry.Lock or entry.Locked) then
+                    R("Pet", "SetUUIDLockRE"):FireServer(uuid)
+                end
+            end
+        end
+        if gained > 0 then
+            EquipBest()
+            FeedAllMax()
+            return gained, ("Acquired %s!"):format(petId)
+        end
+        if minLeft < math.huge then return 0, ("Incubating %s (%ds left)"):format(eggId, minLeft) end
+        return 0, "No eggs incubating"
+    end
+
+    local function RainbowStep()
+        if SeasonCoins(true) < 1600 then FarmCoins(3000) end
+        local rf = R("Season", "LuckPetRF")
+        for _ = 1, 6 do
+            pcall(function() return rf:InvokeServer() end)
+            task.wait(0.015)
+        end
+        GradeUpAll()
+        EquipBest()
+        FeedAllMax()
+    end
+
+    local function CraftRainbow(targetPetId)
+        for _, p in pairs(PetStoreOf(true).have or {}) do
+            if p.Type == "Pet" and p.Grade == "Rainbow" and (targetPetId == "Any" or p.ID == targetPetId) then
+                EquipBest()
+                FeedAllMax()
+                return true, "Already own Rainbow " .. tostring(p.ID)
+            end
+        end
+        local created = false
+        local deadline = os.clock() + 45
+        while PS.Alive and os.clock() < deadline and not created do
+            if SeasonCoins(true) < 2000 then FarmCoins(4000) end
+            EventDraw(10, function(drawn, lockRE, equipRE)
+                if drawn == "Event1_4" then
+                    task.wait(0.15)
+                    for u, it in pairs(PetStoreOf(true).have or {}) do
+                        if it.ID == "Event1_4" and not (it.Lock or it.Locked) then
+                            lockRE:FireServer(u)
+                            equipRE:FireServer(u, true)
+                        end
+                    end
+                end
+            end)
+            GradeUpAll()
+            for _, p in pairs(PetStoreOf(true).have or {}) do
+                if p.Type == "Pet" and p.Grade == "Rainbow" and (targetPetId == "Any" or p.ID == targetPetId) then
+                    created = true
+                    targetPetId = p.ID
+                    break
+                end
+            end
+        end
+        EquipBest()
+        FeedAllMax()
+        return created, created and ("Crafted Rainbow %s!"):format(tostring(targetPetId)) or "Fusing in progress, press again to continue"
+    end
+
+    local function FindPetByName(part, fallback)
+        local folder = Cfg():FindFirstChild("Pet")
+        local showModule = folder and folder:FindFirstChild("Show")
+        local show = showModule and GameLib.Require(showModule)
+        local bestId
+        for id, info in pairs(show or {}) do
+            local name = tostring(type(info) == "table" and (info.DisplayName or info.Name) or ""):lower()
+            if name:find(part, 1, true) and (not bestId or Util.Tier(id) > Util.Tier(bestId)) then bestId = id end
+        end
+        return bestId or fallback
+    end
+
+    local function PetChoices()
+        local labels, ids = {}, {}
+        local folder = Cfg():FindFirstChild("Pet")
+        local showModule = folder and folder:FindFirstChild("Show")
+        local cfgModule = folder and folder:FindFirstChild("Config")
+        local petShow = showModule and GameLib.Require(showModule)
+        local petCfg = cfgModule and GameLib.Require(cfgModule)
+        local keys = {}
+        for id in pairs(petShow or {}) do keys[id] = true end
+        for id in pairs(petCfg or {}) do keys[id] = true end
+        local list = {}
+        for id in pairs(keys) do list[#list + 1] = id end
+        table.sort(list, function(a, b)
+            local la = RarityLevel(petCfg and petCfg[a] and petCfg[a].Rarity)
+            local lb = RarityLevel(petCfg and petCfg[b] and petCfg[b].Rarity)
+            if la ~= lb then return la > lb end
+            return Util.Tier(a) > Util.Tier(b)
+        end)
+        for _, id in ipairs(list) do
+            local info = petShow and petShow[id]
+            local name = info and (info.DisplayName or info.Name) or (petCfg and petCfg[id] and petCfg[id].Name) or id
+            local rarity = petCfg and petCfg[id] and petCfg[id].Rarity or "Pet"
+            local label = "[" .. tostring(rarity) .. "] " .. tostring(name) .. " (" .. id .. ")"
+            labels[#labels + 1] = label
+            ids[label] = id
+        end
+        PS.TargetLabels = ids
+        return labels
+    end
+
+    local function Task(name, fn, done)
+        return function()
+            if PS.Busy then
+                pnotify("Busy: " .. PS.Busy)
+                return
+            end
+            PS.Busy = name
+            task.spawn(function()
+                local ok, a, b = pcall(fn)
+                PS.Busy = nil
+                if not ok then
+                    warn("[LazyJiro]", name, tostring(a))
+                    pnotify(name .. " failed; check the console")
+                    return
+                end
+                if done then pnotify(done(a, b)) end
+            end)
+        end
+    end
+
+    -- UI
+    local HatchCard = PetEggTab:AddCard("Egg Hatchery & Farm", "Left", "OP")
+    local CleanCard = PetEggTab:AddCard("Pet Bag Cleanup", "Left")
+    local DeployCard = PetEggTab:AddCard("Pet Expedition", "Left")
+    local LoadoutCard = PetEggTab:AddCard("Pet Loadout & Feeding", "Right", "OP")
+    local TargetCard = PetEggTab:AddCard("Target Pet Hunt & Rainbow", "Right", "OP")
+
+    HatchCard:AddToggle({
+        Name = "Skip Egg Cutscene", Description = "Hides the egg opening cutscene for instant results", Default = true,
+        Callback = function(v)
+            PS.Opt.SkipEggAnim = v
+            task.spawn(Util.Try, MuteAnim, v)
+        end,
+    })
+    HatchCard:AddButton({ Name = "Open Ready Eggs Now", Primary = true, Callback = Task("Open Eggs", HatchStep, function(opened, hatched)
+        return ("Opened %d eggs, incubating %d eggs"):format(opened or 0, hatched or 0)
+    end) })
+    HatchCard:AddButton({ Name = "Farm & Fill Crown Eggs (Egg2)", Primary = false, Style = "Success", Callback = Task("Farm Eggs", function()
+        return FarmEggsAndFood(6)
+    end, function(eggs, foods)
+        return (eggs or 0) > 0 and ("Collected %d eggs and %d fruits!"):format(eggs or 0, foods or 0) or "Egg farm complete"
+    end) })
+    HatchCard:AddButton({ Name = "Refill 20 Eggs & Fruits Burst", Primary = false, Callback = Task("Refill", function()
+        return FarmEggsAndFood(20)
+    end, function(eggs, foods)
+        return (eggs or 0) > 0 and ("Refilled %d eggs and %d fruits!"):format(eggs or 0, foods or 0) or "Refill complete"
+    end) })
+
+    local rarityOptions = { "Common", "UnCommon", "Rare", "Epic", "Legendary", "Mythic", "Eternal" }
+    do
+        local ok, names = pcall(Shared.RarityNames)
+        if ok and type(names) == "table" and #names > 0 then rarityOptions = names end
+    end
+    CleanCard:AddDropdown({
+        Name = "Protected Rarities", Description = "Selected rarities will NEVER be deleted", Stacked = true, Multi = true,
+        Options = rarityOptions, Default = { "Legendary", "Mythic", "Eternal" },
+        Callback = function(set) PS.Opt.Protected = ToSet(set) end,
+    })
+    CleanCard:AddButton({ Name = "Clean Pet & Egg Bag Now", Primary = false, Callback = Task("Clean Bag", function()
+        return CleanBag(true)
+    end, function(pets, eggs)
+        return ("Deleted %d pets and %d extra eggs"):format(pets or 0, eggs or 0)
+    end) })
+
+    DeployCard:AddButton({ Name = "Deploy & Claim Now", Primary = false, Style = "Success", Callback = Task("Deploy", DeployStep, function(claimed, deployed)
+        return ("Claimed rewards: %s | Deployed: %d"):format(claimed and "yes" or "none", deployed or 0)
+    end) })
+
+    LoadoutCard:AddButton({ Name = "Equip Best Pets Now", Primary = true, Callback = Task("Equip Pets", EquipBest, function(changed)
+        return (changed or 0) > 0 and ("Equipped %d better pets"):format(changed) or "Already using your best pets"
+    end) })
+    LoadoutCard:AddButton({ Name = "Feed Pet Once", Primary = false, Callback = Task("Feed Pet", FeedBest, function(fed)
+        return (fed or 0) > 0 and "Fed your pet!" or "No food or no pet to feed"
+    end) })
+    LoadoutCard:AddButton({ Name = "Feed All Pets to Max Level Now", Primary = false, Style = "Success", Callback = Task("Feed All", FeedAllMax, function(count)
+        return (count or 0) > 0 and ("Fed pets %d times"):format(count) or "Pets already max level or no food"
+    end) })
+
+    local targetDropdown = TargetCard:AddDropdown({
+        Name = "Target Pet", Stacked = true, Options = { "Loading..." }, Default = "Loading...",
+        Callback = function(v)
+            if PS.TargetLabels[v] then PS.Opt.TargetPet = v end
+        end,
+    })
+    task.spawn(function()
+        local ok, labels = pcall(PetChoices)
+        if ok and #labels > 0 then
+            targetDropdown:Refresh(labels)
+            targetDropdown:Set(labels[1])
+            PS.Opt.TargetPet = labels[1]
+        else
+            if not ok then warn("[LazyJiro] pet list:", labels) end
+            targetDropdown:Refresh({ "Unavailable" })
+            targetDropdown:Set("Unavailable", true)
+        end
+    end)
+
+    TargetCard:AddButton({ Name = "Farm & Incubate Target Egg Now", Primary = true, Callback = Task("Hunt Pet", function()
+        local petId = PS.Opt.TargetPet and PS.TargetLabels[PS.Opt.TargetPet]
+        if not petId then return nil, "Pick a target pet first" end
+        local _, msg = FarmAndHatchTarget(petId, 1)
+        return nil, msg
+    end, function(_, msg) return msg or "Target egg incubating" end) })
+    TargetCard:AddButton({ Name = "Lock All High-Tier Pets", Primary = false, Style = "Warning", Callback = Task("Lock Pets", LockAllHighTier, function(count)
+        return ("Locked %d high-tier pets"):format(count or 0)
+    end) })
+    TargetCard:AddButton({ Name = "Craft Grade Up Pets Now", Primary = false, Style = "Success", Callback = Task("Grade Up", GradeUpAll, function(count)
+        return (count or 0) > 0 and ("Upgraded %d pet grades!"):format(count) or "No duplicates to upgrade"
+    end) })
+    TargetCard:AddButton({ Name = "Craft Any Rainbow Pet Now", Primary = true, Callback = Task("Rainbow Cycle", RainbowStep, function()
+        return "Rainbow craft cycle finished"
+    end) })
+    TargetCard:AddButton({ Name = "Craft Rainbow Fenrir (1-Click)", Primary = false, Style = "Success", Callback = Task("Rainbow Fenrir", function()
+        local ok, msg = CraftRainbow(FindPetByName("fenrir", "Pet_Egg2_5"))
+        return ok, msg
+    end, function(_, msg) return msg end) })
+    TargetCard:AddButton({ Name = "Craft 1-Click Rainbow Drake", Primary = true, Callback = Task("Rainbow Drake", function()
+        local ok, msg = CraftRainbow(FindPetByName("drake", "Pet_Egg1_5"))
+        return ok, msg
+    end, function(_, msg) return msg end) })
+
+    -- Mute the egg result screen when the cutscene skip is on
+    task.spawn(function()
+        local remote = FR("Pet", "ShowLuckResult")
+        if remote and remote:IsA("RemoteEvent") then
+            Window.reg(remote.OnClientEvent:Connect(function()
+                if PS.Opt.SkipEggAnim then
+                    task.defer(ResetVFX)
+                    task.delay(0.15, ResetVFX)
+                end
+            end))
+        end
+    end)
+
+    Window.reg({ Disconnect = function()
+        PS.Alive = false
+        pcall(MuteAnim, false)
     end })
 end
 

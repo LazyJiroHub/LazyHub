@@ -1256,6 +1256,215 @@ do
 end
 
 -- ============================================================
+--  SELL (own sidebar page, right under Forge)
+-- ============================================================
+local SellPage = Window:AddPage({ Name = "Sell" })
+local SellTab = SellPage:AddTab("Sell")
+do
+    local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
+    local Ore = Shared.Ore
+
+    local SC = { Interval = 1, MaxFailures = 5, GearTypes = { "Weapon", "Armor", "Hat" } }
+
+    local S = {
+        Alive = true, Busy = false, RunId = 0,
+        Opt = {
+            AutoSell = false,
+            SellTypes = { Weapon = true, Armor = true, Hat = true },
+            SellRarities = {},
+            KeepPerItem = 1,
+        },
+    }
+
+    local function snotify(text, title) notify(text, title or "Sell") end
+
+    local function GetProfile()
+        return Util.Remote("Profile", "GetTotalDataRF"):InvokeServer()
+    end
+
+    local function GearHelper(entryType)
+        return GameLib.Api(entryType == "Weapon" and Cfg().Weapon.Helper or Cfg().Armor.Helper)
+    end
+
+    -- rarity name of a gear entry (config may store a name or a numeric level)
+    local function RarityOf(entry)
+        local folder = entry.Type == "Weapon" and "Weapon" or "Armor"
+        local itemConfig = GameLib.Need(Cfg()[folder].Config)[entry.ID]
+        local rarity = itemConfig and itemConfig.Rarity
+        if type(rarity) == "number" then
+            local ok, name = pcall(function() return GameLib.Api(Cfg().Rarity.Helper).GetRarityByLevel(rarity) end)
+            if ok and name then return name end
+        end
+        return rarity
+    end
+
+    -- keeps the strongest base piece of each type, plus anything you locked in game
+    local function Anchors(profile)
+        local anchors, bestPower = {}, {}
+        for uuid, entry in pairs(profile.Backpack.have) do
+            if entry.Type == "Weapon" or entry.Type == "Armor" or entry.Type == "Hat" then
+                local helper = GearHelper(entry.Type)
+                local ok, percent = pcall(helper.CheckIsBestPercent, entry.ID)
+                if ok and not percent then
+                    local powerOk, power = pcall(helper.GetMainAffix, entry.ID)
+                    if powerOk and type(power) == "number" and power > (bestPower[entry.Type] or 0) then
+                        bestPower[entry.Type] = power
+                        anchors[entry.Type] = uuid
+                    end
+                end
+            end
+        end
+        local keep = {}
+        for _, uuid in pairs(anchors) do keep[uuid] = true end
+        local localData = ReplicatedStorage:FindFirstChild("LocalData")
+        local backpackModule = localData and localData:FindFirstChild("BackpackData")
+        local backpack = backpackModule and GameLib.Require(backpackModule)
+        if type(backpack) == "table" and type(backpack.IsLocked) == "function" then
+            for uuid in pairs(profile.Backpack.have) do
+                local ok, locked = pcall(backpack.IsLocked, uuid)
+                if ok and locked then keep[uuid] = true end
+            end
+        end
+        return keep
+    end
+
+    -- sells every item that matches the filters; returns how many were sent
+    local function SellRun(profile)
+        local opt = S.Opt
+        local protected = Anchors(profile)
+        for _, uuid in pairs(profile.Backpack.equiped) do protected[uuid] = true end
+
+        local byId = {}
+        for uuid, entry in pairs(profile.Backpack.have) do
+            if opt.SellTypes[entry.Type] and not protected[uuid] then
+                byId[entry.ID] = byId[entry.ID] or {}
+                table.insert(byId[entry.ID], { uuid = uuid, entry = entry })
+            end
+        end
+
+        local sell = Util.Remote("Backpack", "TrySellItemRE")
+        local sent = 0
+        for _, items in pairs(byId) do
+            table.sort(items, function(a, b) return (a.entry.Level or 0) > (b.entry.Level or 0) end)
+            for index, gear in ipairs(items) do
+                if index > opt.KeepPerItem and Ore.Allows(opt.SellRarities, RarityOf(gear.entry)) then
+                    sell:FireServer(gear.uuid, 1)
+                    sent += 1
+                end
+            end
+        end
+        return sent
+    end
+
+    local function SellOnce()
+        return SellRun(GetProfile())
+    end
+
+    -- ---------- auto loop ----------
+    local toggleAuto
+
+    local function StartAutoSell()
+        S.RunId += 1
+        local run = S.RunId
+        task.spawn(function()
+            local fails = 0
+            while S.Alive and S.Opt.AutoSell and S.RunId == run do
+                if not S.Busy then
+                    S.Busy = true
+                    local ok, err = pcall(SellOnce)
+                    S.Busy = false
+                    if ok then
+                        fails = 0
+                    else
+                        fails += 1
+                        if fails == 1 then warn("[Lazy Jiro Hub] Auto Sell:", tostring(err)) end
+                        if fails >= SC.MaxFailures then
+                            S.Opt.AutoSell = false
+                            if toggleAuto then toggleAuto:Set(false, true) end
+                            snotify("Auto Sell stopped: " .. tostring(err):match("[^\n]*"), "Warning")
+                            break
+                        end
+                    end
+                end
+                task.wait(SC.Interval)
+            end
+        end)
+    end
+
+    -- ---------- UI ----------
+    local SellCard = SellTab:AddCard("Auto Sell", "Left")
+    local FilterCard = SellTab:AddCard("Filters", "Right")
+
+    toggleAuto = SellCard:AddToggle({
+        Name = "Auto Sell",
+        Description = "Sells gear that matches your filters. Equipped gear is never sold",
+        Default = false,
+        Callback = function(v)
+            S.Opt.AutoSell = v
+            if v then StartAutoSell() else S.RunId += 1 end
+        end,
+    })
+
+    SellCard:AddButton({ Name = "Sell All Now", Primary = true, Callback = function()
+        if S.Busy then return snotify("Busy, try again in a moment", "Warning") end
+        S.Busy = true
+        task.spawn(function()
+            local ok, result = pcall(SellOnce)
+            S.Busy = false
+            if not ok then
+                warn("[Lazy Jiro Hub] Sell All Now:", tostring(result))
+                snotify("Sell failed; check the console", "Error")
+            else
+                snotify(("Sold %d item(s)"):format(result or 0), "Success")
+            end
+        end)
+    end })
+
+    FilterCard:AddDropdown({
+        Name = "Sell Item Types", Stacked = true, Multi = true,
+        Options = SC.GearTypes, Default = SC.GearTypes,
+        Callback = function(set) S.Opt.SellTypes = set end,
+    })
+
+    local rarityDropdown = FilterCard:AddDropdown({
+        Name = "Sell Rarity Filter", Stacked = true, Multi = true,
+        Description = "Only sell these rarities",
+        Options = { "Loading..." }, Default = {},
+        Callback = function(set)
+            set["Loading..."] = nil
+            S.Opt.SellRarities = set
+        end,
+    })
+
+    local keepInput
+    keepInput = FilterCard:AddInput({
+        Name = "Keep Per Item", Stacked = true,
+        Description = "Keeps this many of each item, highest enhance first",
+        Default = "1", Placeholder = "1",
+        Callback = function(text)
+            S.Opt.KeepPerItem = math.max(0, math.floor(tonumber(text) or S.Opt.KeepPerItem))
+            if keepInput then keepInput:Set(tostring(S.Opt.KeepPerItem)) end
+        end,
+    })
+
+    -- rarity list is read from the game after the menu is up so a slow load never blocks it
+    task.spawn(function()
+        local ok, names = pcall(Shared.RarityNames)
+        if ok and type(names) == "table" and #names > 0 then
+            rarityDropdown:Refresh(names)
+            rarityDropdown:Set(names) -- everything selected by default
+        else
+            warn("[Lazy Jiro Hub] sell rarity list:", names)
+            rarityDropdown:Refresh({ "Unavailable" })
+            rarityDropdown:Set({}, true)
+            snotify("Rarity list could not be read, so selling can't be filtered", "Warning")
+        end
+    end)
+
+    Window.reg({ Disconnect = function() S.Alive = false; S.RunId += 1 end })
+end
+
+-- ============================================================
 --  AUTO ROLL (class reroll)
 -- ============================================================
 local ClassServer = ReplicatedStorage:WaitForChild("Remote"):WaitForChild("Class_Server")

@@ -1,5 +1,3 @@
--- The loading screen lives in Loader.lua. When run through the loader this picks it up;
--- when run on its own it is a harmless no-op.
 local Intro = (getgenv and getgenv().LazyJiroIntro) or { Set = function() end, Finish = function() end, Close = function() end }
 
 Intro.Set("Loading menu", 0.15)
@@ -22,8 +20,6 @@ local State = { Running = false, AutoSell = false, AutoRoll = false, AutoHatch =
 
 local function updateStatus(status) State.Status = status end
 
--- Same logic as your plain-UI script: 5 workers with a short wait between rounds.
--- Workers are spawned once per toggle-on; RunId stops old ones when you toggle off.
 local function farmLoop()
     State.RunId += 1
     local run = State.RunId
@@ -117,7 +113,7 @@ local function godLoop()
         end
         task.wait(0.25)
     end
-    -- put max HP back when turned off
+
     local hp = LocalPlayer:FindFirstChild("HPValue")
     if hp and savedMaxHP ~= nil then
         pcall(function()
@@ -147,12 +143,11 @@ local function autoKillLoop()
 end
 
 local Window = Lib:CreateWindow({
-    Name      = "Lazy Jiro岡いオ",
+    Name      = "Lazy Jiro",
     ToggleKey = Enum.KeyCode.RightShift,
     Link      = "https://github.com/jiroscriptsss/LazyHub",
 })
 
--- the menu library is hosted separately; stop early if the hosted copy is older than this script needs
 if (Lib.Version or 0) < 4 then
     warn("[LazyJiro] LazyJiroUI.lua on GitHub is outdated. Upload the new one, wait a few minutes, then run again.")
     Window:Notify({ Title = "Update needed", Content = "LazyJiroUI.lua on GitHub is outdated. Upload the new file, wait a few minutes, then run again.", Duration = 12 })
@@ -169,9 +164,6 @@ local Farming = Main:AddTab("Farming")
 
 local Shared = {}
 
--- ============================================================
---  STAGE & COMBAT (ported from the old PixeL script)
--- ============================================================
 do
     local FarmCfg = {
         LoadTimeout = 30, RemoteTimeout = 10, RequireTimeout = 3,
@@ -189,7 +181,6 @@ do
         pcall(function() Window:Notify({ Title = title or "Stage & Combat", Content = text, Duration = 4 }) end)
     end
 
-    -- game Config folder is looked up lazily so a slow load never blocks the menu
     local function Cfg()
         local folder = ReplicatedStorage:WaitForChild("Config", FarmCfg.LoadTimeout)
         if not folder then error("ReplicatedStorage.Config not found", 0) end
@@ -204,7 +195,6 @@ do
     end
     function Util.Tier(id) return tonumber(tostring(id):match("%d+")) or 0 end
 
-    -- ---------- game modules (needs thread identity on some executors) ----------
     local GameLib = { Loaded = {}, Failed = {}, Apis = {}, Deferred = {} }
 
     function GameLib.RequireAsGame(module)
@@ -291,7 +281,6 @@ do
         return api
     end
 
-    -- ---------- remote finder (survives renamed remotes like Dungeon -> Dungeon_Server) ----------
     do
         local REMOTE_CLASSES = { RemoteEvent = true, RemoteFunction = true, UnreliableRemoteEvent = true }
         local GENERIC = { try = true, re = true, rf = true, event = true, func = true, ["function"] = true, remote = true, request = true, once = true }
@@ -435,7 +424,6 @@ do
         end
     end
 
-    -- ---------- job runner (retry backoff, auto-stops a feature that keeps failing) ----------
     local Sched = {}
 
     function Sched.Run(key, fn)
@@ -466,7 +454,6 @@ do
         return false, result
     end
 
-    -- one persistent worker per fast feature, even with rapid off/on toggling
     function Sched.StartLoop(key, fn, interval, minimum)
         if Farm.Loops[key] then return end
         Farm.Loops[key] = true
@@ -494,7 +481,6 @@ do
         return ok, result
     end
 
-    -- ---------- ore + stage ----------
     local Ore, Stage = {}, {}
 
     function Ore.Rarity(oreId)
@@ -540,7 +526,6 @@ do
 
     function Stage.Best() return Stage.List()[1] end
 
-    -- Failed/unclaimed batches are kept so retries never open a new stage over pending loot.
     function Stage.Collect(stageId, rarities, keepRunning)
         local function active()
             return Farm.Alive and (not keepRunning or keepRunning())
@@ -668,7 +653,6 @@ do
         GameLib.Api(LocalPlayer.PlayerScripts.Manager.StageManager.StageUtils).ExitFight(true)
     end
 
-    -- ---------- combat ----------
     local function KillAll()
         local folder = workspace:FindFirstChild("EnemyFolder")
         if not folder then return false end
@@ -700,7 +684,6 @@ do
         end
     end
 
-    -- ---------- UI ----------
     local StageCard = Farming:AddCard("Stage", "Left")
     local CombatCard = Farming:AddCard("Combat", "Right")
 
@@ -745,7 +728,7 @@ do
         local ok, names = pcall(RarityNames)
         if ok and type(names) == "table" and #names > 0 then
             rarityDropdown:Refresh(names)
-            rarityDropdown:Set(names) -- everything selected by default
+            rarityDropdown:Set(names)
         else
             warn("[LazyJiro] rarity list:", names)
             rarityDropdown:Refresh({ "Unavailable" })
@@ -793,7 +776,6 @@ do
         if v then task.spawn(autoKillLoop) end
     end })
 
-    -- kills of rare ore bosses the moment they spawn
     task.spawn(function()
         local ok, err = pcall(function()
             local event = Util.Remote("SuperLoot", "RefreshSuperLootRE")
@@ -806,16 +788,12 @@ do
         if not ok then warn("[LazyJiro] ore boss hook:", err) end
     end)
 
-    -- stop every worker when the UI is destroyed
     Window.reg({ Disconnect = function() Farm.Alive = false end })
 
     Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify = Util, GameLib, Cfg, notify
     Shared.Ore, Shared.Stage, Shared.Farm, Shared.RarityNames = Ore, Stage, Farm, RarityNames
 end
 
--- ============================================================
---  WORLD BOSS (ported from the old PixeL script)
--- ============================================================
 do
     local Util, GameLib, notify = Shared.Util, Shared.GameLib, Shared.notify
     local Stage = Shared.Stage
@@ -824,7 +802,7 @@ do
 
     local BC = {
         SaveFolder = "Lazy Jiro",
-        -- run again after a server hop (point this at your Loader.lua link)
+
         ReloadSource = [[
 if not game:IsLoaded() then game.Loaded:Wait() end
 task.wait(2)
@@ -867,7 +845,6 @@ if type(body) == "string" then loadstring(body)() end]],
         return nil
     end
 
-    -- ---------- boss fight ----------
     local function AttackId()
         return BC.BossAttackIds[LocalPlayer:GetAttribute("WeaponType")]
     end
@@ -923,7 +900,6 @@ if type(body) == "string" then loadstring(body)() end]],
         end
     end
 
-    -- ---------- leaving the fight (survives a renamed exit remote) ----------
     local ExitWords = { exit = true, leave = true, quit = true, out = true, back = true, ["end"] = true, finish = true, ["return"] = true }
     local SkipWords = { into = true, enter = true, join = true, dead = true, escape = true, claim = true, reward = true, attack = true, atk = true, cards = true, card = true, tick = true }
 
@@ -995,7 +971,6 @@ if type(body) == "string" then loadstring(body)() end]],
         B.BossReturn = nil
     end
 
-    -- ---------- server hop ----------
     local function HopFlag(enabled)
         local flag = BC.SaveFolder .. "/" .. BC.BossHopFlag
         pcall(function()
@@ -1115,7 +1090,6 @@ if type(body) == "string" then loadstring(body)() end]],
         Hop()
     end
 
-    -- ---------- job runner (one persistent worker per feature, auto-stops a feature that keeps failing) ----------
     local function Run(key, fn)
         if not B.Alive or not B.Opt[key] then return end
         local ok, err = pcall(fn)
@@ -1151,7 +1125,6 @@ if type(body) == "string" then loadstring(body)() end]],
         end)
     end
 
-    -- ---------- UI ----------
     local BossCard = Farming:AddCard("World Boss", "Left")
 
     B.Toggles.AutoWorldBoss = BossCard:AddToggle({
@@ -1187,7 +1160,6 @@ if type(body) == "string" then loadstring(body)() end]],
         end,
     })
 
-    -- boss events: claim the reward cards, then leave the fight
     task.spawn(function()
         local ok, err = pcall(function()
             local dead = Util.Remote("WorldBoss", "BossDeadRE")
@@ -1215,7 +1187,6 @@ if type(body) == "string" then loadstring(body)() end]],
         task.delay(1, Util.Try, HopStep)
     end))
 
-    -- came here from a boss hop: turn the hop (and the boss farm) back on
     task.defer(function()
         if HopWanted() and B.Toggles.BossHop then B.Toggles.BossHop:Set(true) end
     end)
@@ -1226,10 +1197,6 @@ if type(body) == "string" then loadstring(body)() end]],
     end })
 end
 
--- ============================================================
---  FORGE (ported from the old PixeL script)
--- ============================================================
--- sidebar order under Farm: Sell, then Forge (pages are listed in the order they are created)
 local SellPage = Window:AddPage({ Name = "Sell" })
 local ForgePage = Window:AddPage({ Name = "Forge" })
 local UpgradePage = Window:AddPage({ Name = "Upgrade" })
@@ -1259,7 +1226,6 @@ do
 
     local function fnotify(text) notify(text, "Forge") end
 
-    -- ---------- data ----------
     local function GetProfile()
         F.Profile = Util.Remote("Profile", "GetTotalDataRF"):InvokeServer()
         return F.Profile
@@ -1296,7 +1262,6 @@ do
         return fresh
     end
 
-    -- ---------- ores ----------
     local function OreIds()
         local ids = {}
         for oreId in pairs(GameLib.Need(Cfg().Ore.Config)) do table.insert(ids, oreId) end
@@ -1340,14 +1305,12 @@ do
         return labels
     end
 
-    -- adds ore to a stack you already own (negative "sell" amount)
     local function AddOre(uuid, amount)
         Util.Remote("Backpack", "TrySellItemRE"):FireServer(uuid, -math.abs(amount))
     end
 
-    -- farms stages until the wanted ore drops once, so it can then be topped up
     local function AcquireOre(oreId)
-        -- never open a new stage over a pending Auto Collect Ore batch
+
         local deadline = os.clock() + 5
         while (Farm.CollectBusy or Farm.OreBatch) and os.clock() < deadline do task.wait(0.1) end
         if Farm.CollectBusy or Farm.OreBatch then return false end
@@ -1396,7 +1359,6 @@ do
         return uuid
     end
 
-    -- ---------- selling the forge leftovers ----------
     local function Anchors(profile)
         local anchors, bestPower = {}, {}
         for uuid, entry in pairs(profile.Backpack.have) do
@@ -1414,7 +1376,7 @@ do
         end
         local keep = {}
         for _, uuid in pairs(anchors) do keep[uuid] = true end
-        -- items you locked in game are never sold
+
         local localData = ReplicatedStorage:FindFirstChild("LocalData")
         local backpackModule = localData and localData:FindFirstChild("BackpackData")
         local backpack = backpackModule and GameLib.Require(backpackModule)
@@ -1450,7 +1412,6 @@ do
         return power * (1 + (entry.Level or 0) * 1e-6 + #(entry.EnchanceList or {}) * 1e-9)
     end
 
-    -- ---------- forging ----------
     local function Target()
         for _, target in ipairs(FC.Targets) do
             if target.name == F.Opt.ForgeTarget then return target end
@@ -1540,7 +1501,6 @@ do
         return completed
     end
 
-    -- ---------- auto loop ----------
     local toggleAuto
 
     local function StartAutoForge()
@@ -1572,7 +1532,7 @@ do
                 end
             end
             F.Running = false
-            -- toggled off and on again while the old loop was winding down
+
             if F.Alive and F.Opt.AutoForge then StartAutoForge() end
         end)
     end
@@ -1594,7 +1554,6 @@ do
         end)
     end
 
-    -- ---------- UI ----------
     local ForgeCard = ForgeTab:AddCard("Forge", "Left")
     local OreCard = ForgeTab:AddCard("Ore Usage", "Right")
 
@@ -1651,7 +1610,6 @@ do
         end,
     })
 
-    -- lists are read from the game after the menu is up so a slow load never blocks it
     task.spawn(function()
         local ok, labels = pcall(OreChoices)
         if ok and #labels > 0 then
@@ -1667,7 +1625,7 @@ do
         local ok, names = pcall(Shared.RarityNames)
         if ok and type(names) == "table" and #names > 0 then
             rarityDropdown:Refresh(names)
-            rarityDropdown:Set(names) -- everything selected by default
+            rarityDropdown:Set(names)
         else
             warn("[LazyJiro] forge rarity list:", names)
             rarityDropdown:Refresh({ "Unavailable" })
@@ -1679,9 +1637,6 @@ do
     Window.reg({ Disconnect = function() F.Alive = false end })
 end
 
--- ============================================================
---  SELL (its page is created above, right under Farm)
--- ============================================================
 local SellTab = SellPage:AddTab("Sell")
 do
     local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
@@ -1709,7 +1664,6 @@ do
         return GameLib.Api(entryType == "Weapon" and Cfg().Weapon.Helper or Cfg().Armor.Helper)
     end
 
-    -- rarity name of a gear entry (config may store a name or a numeric level)
     local function RarityOf(entry)
         local folder = entry.Type == "Weapon" and "Weapon" or "Armor"
         local itemConfig = GameLib.Need(Cfg()[folder].Config)[entry.ID]
@@ -1721,7 +1675,6 @@ do
         return rarity
     end
 
-    -- keeps the strongest base piece of each type, plus anything you locked in game
     local function Anchors(profile)
         local anchors, bestPower = {}, {}
         for uuid, entry in pairs(profile.Backpack.have) do
@@ -1751,7 +1704,6 @@ do
         return keep
     end
 
-    -- sells every item that matches the filters; returns how many were sent
     local function SellRun(profile)
         local opt = S.Opt
         local protected = Anchors(profile)
@@ -1783,7 +1735,6 @@ do
         return SellRun(GetProfile())
     end
 
-    -- ---------- auto loop ----------
     local toggleAuto
 
     local function StartAutoSell()
@@ -1814,7 +1765,6 @@ do
         end)
     end
 
-    -- ---------- UI ----------
     local SellCard = SellTab:AddCard("Auto Sell", "Left")
     local FilterCard = SellTab:AddCard("Filters", "Right")
 
@@ -1870,12 +1820,11 @@ do
         end,
     })
 
-    -- rarity list is read from the game after the menu is up so a slow load never blocks it
     task.spawn(function()
         local ok, names = pcall(Shared.RarityNames)
         if ok and type(names) == "table" and #names > 0 then
             rarityDropdown:Refresh(names)
-            rarityDropdown:Set(names) -- everything selected by default
+            rarityDropdown:Set(names)
         else
             warn("[LazyJiro] sell rarity list:", names)
             rarityDropdown:Refresh({ "Unavailable" })
@@ -1887,9 +1836,6 @@ do
     Window.reg({ Disconnect = function() S.Alive = false; S.RunId += 1 end })
 end
 
--- ============================================================
---  UPGRADE (training, rebirth and upgrades; own sidebar page under Forge)
--- ============================================================
 local UpgradeTab = UpgradePage:AddTab("Upgrade")
 do
     local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
@@ -1917,7 +1863,6 @@ do
         return Util.Remote("Profile", "GetTotalDataRF"):InvokeServer()
     end
 
-    -- ---------- training ----------
     local function FindBestArea(gen)
         local areas = GameLib.Need(Cfg().TrainArea.Config)
         local ids, seen = {}, {}
@@ -2030,7 +1975,6 @@ do
         TrainEnter()
     end
 
-    -- re-enter the training area if the game kicks you out of it
     Window.reg(LocalPlayer:GetAttributeChangedSignal("AutoTrainAreaID"):Connect(function()
         if not U.Opt.AutoTrain or LocalPlayer:GetAttribute("AutoTrainAreaID") then return end
         task.delay(UC.TrainRejoinDelay, function()
@@ -2040,7 +1984,6 @@ do
         end)
     end))
 
-    -- ---------- clicking ----------
     local function Humanoid()
         return LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
     end
@@ -2060,7 +2003,6 @@ do
         return true
     end
 
-    -- ---------- rebirth + upgrades ----------
     local function Rebirth()
         Util.Remote("Rebirth", "TryRebirthRE"):FireServer()
     end
@@ -2089,7 +2031,6 @@ do
         end
     end
 
-    -- ---------- job runner (one persistent worker per feature, auto-stops a feature that keeps failing) ----------
     local function Run(key, fn)
         if not U.Alive or not U.Opt[key] then return end
         local ok, err = pcall(fn)
@@ -2126,7 +2067,6 @@ do
         end)
     end
 
-    -- ---------- UI ----------
     local TrainCard = UpgradeTab:AddCard("Training", "Left")
     local UpgradeCard = UpgradeTab:AddCard("Upgrades", "Right")
 
@@ -2218,12 +2158,11 @@ do
         end)
     end })
 
-    -- upgrade list is read from the game after the menu is up so a slow load never blocks it
     task.spawn(function()
         local ok, names = pcall(UpgradeNames)
         if ok and type(names) == "table" and #names > 0 then
             upgradeDropdown:Refresh(names)
-            upgradeDropdown:Set(names) -- everything selected by default
+            upgradeDropdown:Set(names)
         else
             warn("[LazyJiro] upgrade list:", names)
             upgradeDropdown:Refresh({ "Unavailable" })
@@ -2232,7 +2171,6 @@ do
         end
     end)
 
-    -- stop every worker when the UI is destroyed
     Window.reg({ Disconnect = function()
         U.Alive = false
         if U.Opt.AutoTrain then
@@ -2242,9 +2180,6 @@ do
     end })
 end
 
--- ============================================================
---  AUTO ROLL (class reroll)
--- ============================================================
 local ClassServer = ReplicatedStorage:WaitForChild("Remote"):WaitForChild("Class_Server")
 local LuckOnceRE = ClassServer:WaitForChild("LuckOnceRE")
 
@@ -2262,10 +2197,8 @@ local Classes = {
 }
 local CLASS_ORDER = { "Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6", "Class_7", "Class_8", "Class_9", "Class_10" }
 
--- Tier filter (empty {} = any tier)
 local STOP_TIERS = { [1] = true, [2] = true, [3] = true }
 
--- Stops on the chosen class and anything rarer (default Demon = Demon / Angel / Lavakin)
 local STOP_CLASSES = {}
 local function setStopFrom(classId)
     STOP_CLASSES = {}
@@ -2355,7 +2288,6 @@ ArgCard:AddToggleGrid({ Name = "Slots", Items = slotNames, Columns = 2, Callback
     if argVal then Roll.Args[argVal] = v end
 end })
 
--- Result detection
 local function splitNameAndTier(str)
     local name, tier = str:match("^(.-)%s*[%s_%-]%s*(%d+)$")
     if name and name ~= "" then
@@ -2434,7 +2366,6 @@ for _, attr in ipairs({ "Class", "Result", "Roll", "LastRoll", "ClassResult" }) 
     end)
 end
 
-
 local Tower = Main:AddTab("Tower")
 local TowerFarmCard = Tower:AddCard("Dungeon", "Left")
 local TowerSellCard = Tower:AddCard("Pet", "Right")
@@ -2479,9 +2410,6 @@ end})
 
 local Spawner = Main:AddTab("Spawner")
 
--- ============================================================
---  FORGE GEAR (hunts a chosen weapon/armor/hat with the ore you own)
--- ============================================================
 do
     local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
 
@@ -2497,7 +2425,6 @@ do
 
     local function Aborted() return S.Cancel or not S.Alive end
 
-    -- ---------- data ----------
     local function GetProfile()
         return Util.Remote("Profile", "GetTotalDataRF"):InvokeServer()
     end
@@ -2537,7 +2464,6 @@ do
         while pending > 0 and os.clock() < deadline do task.wait(0.1) end
     end
 
-    -- ---------- gear catalog and forge chances ----------
     local function GearCatalog()
         local gear = {}
         local armorHelper = GameLib.Api(Cfg().Armor.Helper)
@@ -2554,7 +2480,6 @@ do
         return GameLib.Api(gear.forgeType == "Weapon" and Cfg().Weapon.Helper or Cfg().Armor.Helper)
     end
 
-    -- candidates = { { id = oreId, max = highestOreCountAllowed }, ... }; returns chance, oreId, count (nil if aborted)
     local function PlanFor(gear, candidates, aborted)
         local forgeUtils = GameLib.Api(ReplicatedStorage.Utils.ForgeUtils)
         local helper = GearHelper(gear)
@@ -2632,8 +2557,6 @@ do
         return labels, byLabel
     end
 
-    -- ---------- selling the forge leftovers (new items only) ----------
-    -- keeps the strongest piece of each type so a lucky better roll is never sold
     local function Anchors(profile)
         local anchors, bestPower = {}, {}
         for uuid, entry in pairs(profile.Backpack.have) do
@@ -2665,8 +2588,6 @@ do
         end
     end
 
-    -- ---------- the hunt ----------
-    -- Forges with the best recipe from ore you already own, keeps copies of the target, sells the rest.
     local function Hunt(gear, copies)
         local forgeRF = Util.Remote("Forge", "ForgeRF")
         local got, forgedTotal = 0, 0
@@ -2726,7 +2647,6 @@ do
         return got, got >= copies and "done" or (Aborted() and "stopped" or "forge limit reached")
     end
 
-    -- ---------- season shop ----------
     local function SeasonCurrent()
         local seasons = GetProfile().Season or {}
         local bestKey, bestTier = nil, -1
@@ -2737,7 +2657,6 @@ do
         return bestKey and seasons[bestKey]
     end
 
-    -- buys every exclusive weapon/armor/hat you already have enough season coins for
     local function BuyExclusive()
         local goods = GameLib.Need(Cfg().Season.GoodsConfig)
         local exchange = Util.Remote("Season", "ExchangeGoodsRE")
@@ -2759,7 +2678,6 @@ do
         return bought, short
     end
 
-    -- ---------- UI ----------
     local GearCard = Spawner:AddCard("Spawn Gear", "Left", "OP")
     local gearDropdown
     local loadToken = 0
@@ -2867,7 +2785,6 @@ UiCard:AddToggle({ Name = "Falling Petals", Default = true, Callback = function(
 UiCard:AddSlider({ Name = "UI Scale", Min = 0.6, Max = 1.3, Default = 1, Increment = 0.05, Callback = function(v) Window:SetScale(v) end })
 UiCard:AddButton({ Name = "Destroy UI", Primary = false, Callback = function() Window:Destroy() end })
 
--- Anti AFK: Roblox kicks idle players after ~20 minutes. A fake right-click on every idle event resets that timer.
 local AntiAfk = { Enabled = true, Blocked = 0 }
 local AfkCard = InterfaceTab:AddCard("Anti AFK", "Right")
 local afkStatus
@@ -2890,6 +2807,6 @@ pcall(function()
     end)
 end)
 
-Window:Notify({ Title = "Lazy Jiro岡いオ", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })
+Window:Notify({ Title = "Lazy Jiro", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })
 Intro.Set("Almost ready", 0.9)
 if getgenv then getgenv().LazyJiroWindow = Window end

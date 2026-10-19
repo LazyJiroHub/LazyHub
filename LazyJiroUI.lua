@@ -23,7 +23,7 @@ local Theme = {
     Good    = Color3.fromRGB(110, 231, 160),
 }
 
-local Lib = { Theme = Theme }
+local Lib = { Theme = Theme, Version = 4 }
 
 local function New(class, props, kids)
     local o = Instance.new(class)
@@ -230,6 +230,45 @@ function Elements:AddToggle(o)
     return obj
 end
 
+function Elements:AddToggleGrid(o)
+    local items = o.Items or {}
+    local cols = math.max(1, o.Columns or 2)
+    local CELL, GAP = 36, 10
+    local rowsN = math.max(1, math.ceil(#items / cols))
+    local row = Row(self, rowsN * CELL + (rowsN - 1) * GAP)
+    addEl(self, o.Name or table.concat(items, " "), row)
+    New("UIGridLayout", {
+        CellSize = UDim2.new(1 / cols, -(GAP * (cols - 1)) / cols, 0, CELL),
+        CellPadding = UDim2.fromOffset(GAP, GAP), SortOrder = Enum.SortOrder.LayoutOrder, Parent = row,
+    })
+    local obj = { Values = {}, Window = self.Window }
+    local cells = {}
+    for i, name in ipairs(items) do
+        obj.Values[name] = false
+        local b = New("TextButton", {
+            LayoutOrder = i, BackgroundColor3 = Theme.Element, AutoButtonColor = false, Text = tostring(name),
+            Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Theme.SubText, Parent = row,
+        })
+        Corner(b, 10)
+        cells[name] = { b = b, st = Stroke(b, Theme.Stroke, 1) }
+    end
+    function obj:Set(name, v, silent)
+        local c = cells[name]
+        if not c then return end
+        v = v and true or false
+        self.Values[name] = v
+        Tween(c.b, { BackgroundColor3 = v and Theme.Accent or Theme.Element, TextColor3 = v and Theme.Bg or Theme.SubText }, 0.18)
+        Tween(c.st, { Color = v and Theme.Accent or Theme.Stroke }, 0.18)
+        if o.Flag then self.Window.Flags[o.Flag .. "." .. tostring(name)] = v end
+        if not silent then Fire(o.Callback, name, v) end
+    end
+    for name, c in pairs(cells) do
+        c.b.MouseButton1Click:Connect(function() obj:Set(name, not obj.Values[name]) end)
+    end
+    for _, name in ipairs(o.Default or {}) do obj:Set(name, true, true) end
+    return obj
+end
+
 function Elements:AddSlider(o)
     local min, max, inc = o.Min or 0, o.Max or 100, o.Increment or 1
     local suffix = o.Suffix or ""
@@ -347,81 +386,176 @@ end
 
 function Elements:AddDropdown(o)
     local opts = o.Options or {}
+    local multi = o.Multi == true
+    local stacked = o.Stacked == true
+    local ROW, GAP, MAX_LIST = 28, 4, 150
+    local card = self
+
     local cont = New("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
         LayoutOrder = nextOrder(self), Parent = self.Frame,
     })
     New("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder, Parent = cont })
     addEl(self, o.Name, cont)
+    if stacked then
+        New("TextLabel", {
+            LayoutOrder = -2, Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1, Text = o.Name,
+            Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left, Parent = cont,
+        })
+        if o.Description then
+            New("TextLabel", {
+                LayoutOrder = -1, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1, Text = o.Description,
+                Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, Parent = cont,
+            })
+        end
+    end
 
     local head = New("TextButton", {
         LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = Theme.Element,
         AutoButtonColor = false, Text = "", Parent = cont,
     })
     Corner(head, 10); Stroke(head, Theme.Stroke, 1)
-    New("TextLabel", {
-        Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(0.5, -12, 1, 0), BackgroundTransparency = 1, Text = o.Name,
+    if not stacked then New("TextLabel", {
+        Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(0.4, -12, 1, 0), BackgroundTransparency = 1, Text = o.Name,
         Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
         TextTruncate = Enum.TextTruncate.AtEnd, Parent = head,
-    })
+    }) end
     local val = New("TextLabel", {
-        Position = UDim2.new(0.5, 0, 0, 0), Size = UDim2.new(0.5, -30, 1, 0), BackgroundTransparency = 1, Text = "",
-        Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = Theme.Accent, TextXAlignment = Enum.TextXAlignment.Right,
+        Position = stacked and UDim2.new(0, 12, 0, 0) or UDim2.new(0.4, 0, 0, 0),
+        Size = stacked and UDim2.new(1, -34, 1, 0) or UDim2.new(0.6, -30, 1, 0), BackgroundTransparency = 1, Text = "",
+        Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = stacked and Theme.Text or Theme.Accent,
+        TextXAlignment = stacked and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right,
         TextTruncate = Enum.TextTruncate.AtEnd, Parent = head,
     })
     local arrow = New("TextLabel", {
         AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 0), Size = UDim2.new(0, 14, 1, 0),
         BackgroundTransparency = 1, Text = "v", Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = Theme.SubText, Parent = head,
     })
-    local list = New("Frame", {
-        LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1, Visible = false, Parent = cont,
+    -- Option list scrolls once it gets taller than MAX_LIST so long lists don't stretch the card
+    local list = New("ScrollingFrame", {
+        LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, Visible = false,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = Theme.Accent,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), Parent = cont,
     })
-    New("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
+    New("UIListLayout", { Padding = UDim.new(0, GAP), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
 
-    local obj = { Value = nil, Window = self.Window }
+    local obj = { Value = multi and {} or nil, Window = self.Window }
     local buttons = {}
+    local current = {}
+
+    local function summary()
+        local picked = {}
+        for _, opt in ipairs(current) do
+            if obj.Value[opt] then table.insert(picked, tostring(opt)) end
+        end
+        return #picked > 0 and table.concat(picked, ", ") or "None"
+    end
+
     local function refreshColors()
         for opt, b in pairs(buttons) do
-            local on = opt == obj.Value
+            local on
+            if multi then on = obj.Value[opt] == true else on = opt == obj.Value end
             b.TextColor3 = on and Theme.Accent or Theme.SubText
             b.BackgroundColor3 = on and Theme.Hover or Theme.Panel
         end
     end
+
     function obj:Set(v, silent)
+        if multi then
+            -- accepts a list { "A", "B" } or a set { A = true }
+            local set = {}
+            if type(v) == "table" then
+                for k, x in pairs(v) do
+                    if type(k) == "number" then set[x] = true elseif x then set[k] = true end
+                end
+            end
+            self.Value = set
+            val.Text = summary()
+            refreshColors()
+            if o.Flag then self.Window.Flags[o.Flag] = set end
+            if not silent then Fire(o.Callback, table.clone(set)) end
+            return
+        end
         self.Value = v
         val.Text = tostring(v)
         refreshColors()
         if o.Flag then self.Window.Flags[o.Flag] = v end
         if not silent then Fire(o.Callback, v) end
     end
+
     function obj:Refresh(newOpts)
         for _, b in pairs(buttons) do b:Destroy() end
         buttons = {}
+        current = newOpts
+        local n = #newOpts
+        local h = n > 0 and math.min(n * (ROW + GAP) - GAP, MAX_LIST) or 0
+        list.Size = UDim2.new(1, 0, 0, h)
         for idx, opt in ipairs(newOpts) do
             local b = New("TextButton", {
-                LayoutOrder = idx, Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = Theme.Panel, AutoButtonColor = false,
+                LayoutOrder = idx, Size = UDim2.new(1, -6, 0, ROW), BackgroundColor3 = Theme.Panel, AutoButtonColor = false,
                 Text = tostring(opt), Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = Theme.SubText, Parent = list,
             })
             Corner(b, 8)
             b.MouseButton1Click:Connect(function()
-                obj:Set(opt)
-                list.Visible = false; arrow.Text = "v"
+                if multi then
+                    local set = table.clone(obj.Value)
+                    if set[opt] then set[opt] = nil else set[opt] = true end
+                    obj:Set(set)
+                else
+                    obj:Set(opt)
+                    list.Visible = false; arrow.Text = "v"
+                    if card.Tab and card.Tab.Balance then card.Tab.Balance() end
+                end
             end)
             buttons[opt] = b
         end
+        if multi then val.Text = summary() end
         refreshColors()
     end
+
     head.MouseButton1Click:Connect(function()
         list.Visible = not list.Visible
         arrow.Text = list.Visible and "^" or "v"
+        if card.Tab and card.Tab.Balance then card.Tab.Balance() end
     end)
+
     obj:Refresh(opts)
-    obj:Set(o.Default or opts[1] or "None", true)
+    if multi then
+        obj:Set(o.Default or {}, true)
+    else
+        obj:Set(o.Default or opts[1] or "None", true)
+    end
     return obj
 end
 
 function Elements:AddInput(o)
+    if o.Stacked then
+        local cont = New("Frame", {
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+            LayoutOrder = nextOrder(self), Parent = self.Frame,
+        })
+        New("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder, Parent = cont })
+        addEl(self, o.Name, cont)
+        New("TextLabel", {
+            LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1, Text = o.Name,
+            Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left, Parent = cont,
+        })
+        local sbox = New("TextBox", {
+            LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = Theme.Element, Text = o.Default or "",
+            PlaceholderText = o.Placeholder or "Type here...", PlaceholderColor3 = Theme.SubText, Font = Enum.Font.Gotham,
+            TextSize = 12, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false, Parent = cont,
+        })
+        Corner(sbox, 10); Pad(sbox, 12, 0, 12, 0)
+        local sst = Stroke(sbox, Theme.Stroke, 1)
+        sbox.Focused:Connect(function() Tween(sst, { Color = Theme.Accent }, 0.15) end)
+        sbox.FocusLost:Connect(function()
+            Tween(sst, { Color = Theme.Stroke }, 0.15)
+            if o.Flag then self.Window.Flags[o.Flag] = sbox.Text end
+            Fire(o.Callback, sbox.Text)
+        end)
+        return { Box = sbox, Get = function() return sbox.Text end, Set = function(_, t) sbox.Text = t end }
+    end
     local row = Row(self, 36)
     addEl(self, o.Name, row)
     RowLabel(row, o.Name, UDim2.new(0.42, 0, 1, 0))
@@ -981,14 +1115,14 @@ function Lib:CreateWindow(cfg)
                     local target = 0
                     for _, i in ipairs(info) do target = math.max(target, i.h) end
                     for _, i in ipairs(info) do
-                        if i.last and i.h < target then
+                        if i.last and i.h < target and (target - i.h) <= 60 then
                             i.last.Limit.MinSize = Vector2.new(0, i.last.Frame.AbsoluteSize.Y / sc + (target - i.h))
                         end
                     end
                 end)
             end
 
-            function tab:AddCard(title, side)
+            function tab:AddCard(title, side, tag)
                 local card = setmetatable({ Els = {}, _n = 0, Window = Window, Tab = tab }, { __index = Elements })
                 card.Frame = New("Frame", {
                     Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Color3.new(1, 1, 1),
@@ -1010,6 +1144,14 @@ function Lib:CreateWindow(cfg)
                     Position = UDim2.fromOffset(13, 0), Size = UDim2.new(1, -13, 1, 0), BackgroundTransparency = 1, Text = title,
                     Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left, Parent = head,
                 })
+                if tag then
+                    local badge = New("TextLabel", {
+                        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(40, 20),
+                        BackgroundColor3 = Color3.fromRGB(96, 40, 52), Text = tostring(tag), Font = Enum.Font.GothamBold,
+                        TextSize = 11, TextColor3 = Color3.fromRGB(255, 140, 150), Parent = head,
+                    })
+                    Corner(badge, 6); Stroke(badge, Color3.fromRGB(230, 110, 110), 1)
+                end
                 New("Frame", { LayoutOrder = -1, Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = Theme.Stroke, BackgroundTransparency = 0.3, Parent = card.Frame })
 
                 card._empty = New("TextLabel", {

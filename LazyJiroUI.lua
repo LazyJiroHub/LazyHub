@@ -24,7 +24,7 @@ local Theme = {
     Good    = Color3.fromRGB(110, 231, 160),
 }
 
-local Lib = { Theme = Theme, Version = 4 }
+local Lib = { Theme = Theme, Version = 5 }
 
 local function New(class, props, kids)
     local o = Instance.new(class)
@@ -1160,7 +1160,6 @@ function Lib:CreateWindow(cfg)
                 })
                 Corner(card.Frame, 14); Stroke(card.Frame, Theme.Stroke, 1)
                 Grad(card.Frame, Color3.fromRGB(33, 26, 38), Theme.Card, 90)
-                card.Limit = New("UISizeConstraint", { MinSize = Vector2.new(0, 0), Parent = card.Frame })
                 Pad(card.Frame, 14, 14, 14, 14)
                 New("UIListLayout", { Padding = UDim.new(0, 12), SortOrder = Enum.SortOrder.LayoutOrder, Parent = card.Frame })
 

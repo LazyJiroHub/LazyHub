@@ -807,7 +807,9 @@ end
 -- ============================================================
 --  FORGE (ported from the old PixeL script)
 -- ============================================================
-local ForgeTab = Main:AddTab("Forge")
+-- its own sidebar page, right under Farm
+local ForgePage = Window:AddPage({ Name = "Forge" })
+local ForgeTab = ForgePage:AddTab("Forge")
 do
     local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
     local Ore, Stage, Farm = Shared.Ore, Shared.Stage, Shared.Farm

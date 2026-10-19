@@ -141,7 +141,7 @@ local function autoKillLoop()
 end
 
 local Window = Lib:CreateWindow({
-    Name      = "LazyJiro",
+    Name      = "𝐋𝐚𝐳𝐲 𝐉𝐢𝐫𝐨岡いオ",
     ToggleKey = Enum.KeyCode.RightShift,
     Link      = "https://github.com/jiroscriptsss/LazyHub",
 })
@@ -810,6 +810,7 @@ end
 -- sidebar order under Farm: Sell, then Forge (pages are listed in the order they are created)
 local SellPage = Window:AddPage({ Name = "Sell" })
 local ForgePage = Window:AddPage({ Name = "Forge" })
+local UpgradePage = Window:AddPage({ Name = "Upgrade" })
 local ForgeTab = ForgePage:AddTab("Forge")
 do
     local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
@@ -1465,6 +1466,361 @@ do
 end
 
 -- ============================================================
+--  UPGRADE (training, rebirth and upgrades; own sidebar page under Forge)
+-- ============================================================
+local UpgradeTab = UpgradePage:AddTab("Upgrade")
+do
+    local Util, GameLib, Cfg, notify = Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify
+    local UserInputService = game:GetService("UserInputService")
+
+    local UC = {
+        MaxFailures = 5,
+        TrainRejoinDelay = 0.3, TrainWatchdog = 3, TrainAcceptWait = 1.5, TrainExitTries = 3, TrainSettle = 0.5,
+        RebirthInterval = 2, UpgradeInterval = 5, TrainInterval = 1,
+    }
+
+    local U = {
+        Alive = true, Loops = {}, Fails = {}, Toggles = {},
+        TrainArea = nil, TrainPending = nil, TrainEntering = false, TrainGen = 0, TrainFiredAt = 0,
+        TrainRebirth = nil, TrainLevel = nil, TrainNilSince = nil,
+        Opt = {
+            AutoTrain = false, AutoClick = false, ClickRate = 6, ClickPauseTyping = true,
+            AutoRebirth = false, AutoUpgrade = false, Upgrades = {},
+        },
+    }
+
+    local function unotify(text, title) notify(text, title or "Upgrade") end
+
+    local function GetProfile()
+        return Util.Remote("Profile", "GetTotalDataRF"):InvokeServer()
+    end
+
+    -- ---------- training ----------
+    local function FindBestArea(gen)
+        local areas = GameLib.Need(Cfg().TrainArea.Config)
+        local ids, seen = {}, {}
+        for areaId, area in pairs(areas) do
+            local id = tonumber(areaId)
+            if id and not seen[id] and type(area) == "table" then
+                seen[id] = true
+                table.insert(ids, { id = id, basic = tonumber(area.Basic) or 0 })
+            end
+        end
+        table.sort(ids, function(a, b)
+            if a.basic == b.basic then return a.id > b.id end
+            return a.basic > b.basic
+        end)
+
+        local function Live()
+            return U.Alive and U.Opt.AutoTrain and U.TrainGen == gen
+        end
+
+        local into = Util.Remote("Train", "IntoAutoTrainRE")
+        for _, entry in ipairs(ids) do
+            local areaId = entry.id
+            if not Live() then U.TrainPending = nil; return nil end
+            U.TrainPending = areaId
+            into:FireServer(areaId)
+            local deadline = os.clock() + UC.TrainAcceptWait
+            while Live() and os.clock() < deadline and tonumber(LocalPlayer:GetAttribute("AutoTrainAreaID")) ~= areaId do
+                task.wait(0.1)
+            end
+            if Live() and tonumber(LocalPlayer:GetAttribute("AutoTrainAreaID")) == areaId then
+                U.TrainPending = nil
+                return areaId
+            end
+        end
+        U.TrainPending = nil
+        return nil
+    end
+
+    local function TrainEnter()
+        if not U.Opt.AutoTrain or U.TrainEntering then return end
+        if U.TrainArea then
+            if os.clock() - U.TrainFiredAt < UC.TrainAcceptWait then return end
+            U.TrainFiredAt = os.clock()
+            Util.Remote("Train", "IntoAutoTrainRE"):FireServer(U.TrainArea)
+            return
+        end
+        local gen = U.TrainGen
+        U.TrainEntering = true
+        local ok, areaId = pcall(FindBestArea, gen)
+        U.TrainEntering = false
+        if not ok then error(areaId, 0) end
+        if U.TrainGen == gen and areaId then
+            U.TrainArea = areaId
+            U.TrainFiredAt = os.clock()
+        end
+    end
+
+    local function TrainLeave()
+        local exit = Util.Remote("Train", "ExitAutoTrainRE")
+        for _ = 1, UC.TrainExitTries do
+            local areaId = LocalPlayer:GetAttribute("AutoTrainAreaID") or U.TrainPending or U.TrainArea
+            if not areaId then return end
+            exit:FireServer(areaId)
+            if not U.Alive then
+                U.TrainPending = nil
+                return
+            end
+            task.wait(UC.TrainSettle)
+            if U.Opt.AutoTrain then return end
+            if not LocalPlayer:GetAttribute("AutoTrainAreaID") then
+                U.TrainPending = nil
+                return
+            end
+        end
+        warn("[LazyJiro] training area still set after", UC.TrainExitTries, "exits")
+    end
+
+    local function SetTraining(enabled)
+        U.TrainGen += 1
+        if enabled then TrainEnter() else TrainLeave() end
+    end
+
+    local function UsePotions(profile)
+        local potionConfig = GameLib.Need(Cfg().Potion.Config)
+        local now = workspace:GetAttribute("ServerTime") or os.time()
+        local buffs = profile.Buff or {}
+        for potionName, count in pairs(profile.Potion or {}) do
+            local buffId = potionConfig[potionName] and potionConfig[potionName].BuffID
+            local active = buffId and type(buffs[buffId]) == "number" and buffs[buffId] > now
+            if type(count) == "number" and count > 0 and not active then
+                Util.Remote("Potion", "TryUsePotionRE"):FireServer(potionName, 1)
+            end
+        end
+    end
+
+    local function TrainStep()
+        local profile = GetProfile()
+        UsePotions(profile)
+        if profile.Eco.rebirth ~= U.TrainRebirth or profile.Eco.level ~= U.TrainLevel then
+            U.TrainRebirth = profile.Eco.rebirth
+            U.TrainLevel = profile.Eco.level
+            U.TrainArea = nil
+        end
+        if LocalPlayer:GetAttribute("AutoTrainAreaID") then
+            U.TrainNilSince = nil
+            return
+        end
+        U.TrainNilSince = U.TrainNilSince or os.clock()
+        if os.clock() - U.TrainNilSince < UC.TrainWatchdog then return end
+        TrainEnter()
+    end
+
+    -- re-enter the training area if the game kicks you out of it
+    Window.reg(LocalPlayer:GetAttributeChangedSignal("AutoTrainAreaID"):Connect(function()
+        if not U.Opt.AutoTrain or LocalPlayer:GetAttribute("AutoTrainAreaID") then return end
+        task.delay(UC.TrainRejoinDelay, function()
+            if U.Alive and U.Opt.AutoTrain and not LocalPlayer:GetAttribute("AutoTrainAreaID") then
+                Util.Try(TrainEnter)
+            end
+        end)
+    end))
+
+    -- ---------- clicking ----------
+    local function Humanoid()
+        return LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    end
+
+    local function ClickOnce()
+        GameLib.Api(ReplicatedStorage.CTRL.TrainCTRL).TrainOnce()
+    end
+
+    local function CanClick()
+        if not U.Alive or not U.Opt.AutoClick then return false end
+        local hum = Humanoid()
+        if not hum or hum.Health <= 0 then return false end
+        if U.Opt.ClickPauseTyping then
+            local ok, focused = pcall(UserInputService.GetFocusedTextBox, UserInputService)
+            if ok and focused then return false end
+        end
+        return true
+    end
+
+    -- ---------- rebirth + upgrades ----------
+    local function Rebirth()
+        Util.Remote("Rebirth", "TryRebirthRE"):FireServer()
+    end
+
+    local function RebirthStep()
+        local profile = GetProfile()
+        local ok, needLevel = pcall(GameLib.Api(Cfg().Rebirth.Helper).GetNeedLevel, profile.Eco.rebirth + 1)
+        if ok and needLevel and profile.Eco.level >= needLevel then
+            Rebirth()
+        end
+    end
+
+    local function UpgradeNames()
+        local names = {}
+        for name in pairs(GameLib.Need(Cfg().Upgrade.Config)) do
+            table.insert(names, name)
+        end
+        table.sort(names)
+        return names
+    end
+
+    local function BuySelected()
+        local buy = Util.Remote("Upgrade", "UpgradeOnceRE")
+        for name, selected in pairs(U.Opt.Upgrades) do
+            if selected and name ~= "Loading..." then buy:FireServer(name) end
+        end
+    end
+
+    -- ---------- job runner (one persistent worker per feature, auto-stops a feature that keeps failing) ----------
+    local function Run(key, fn)
+        if not U.Alive or not U.Opt[key] then return end
+        local ok, err = pcall(fn)
+        if ok then U.Fails[key] = nil; return end
+        local fails = (U.Fails[key] or 0) + 1
+        U.Fails[key] = fails
+        if fails == 1 then warn("[LazyJiro]", key, tostring(err)) end
+        if fails >= UC.MaxFailures then
+            U.Fails[key] = nil
+            U.Opt[key] = false
+            local reason = tostring(err):match("[^\n]*")
+            warn("[LazyJiro]", key, "stopped:", reason)
+            local toggle = U.Toggles[key]
+            if toggle then toggle:Set(false, true) end
+            if key == "AutoTrain" then task.spawn(Util.Try, SetTraining, false) end
+            unotify(key .. " stopped: " .. reason, "Warning")
+            return
+        end
+        task.wait(math.min(2, 0.25 * 2 ^ (fails - 1)))
+    end
+
+    local function StartLoop(key, delay, fn)
+        if U.Loops[key] then return end
+        U.Loops[key] = true
+        task.spawn(function()
+            while U.Alive do
+                local started = os.clock()
+                if U.Opt[key] then Run(key, fn) end
+                local period = math.max(0.04, U.Opt[key] and delay() or 0.1)
+                local elapsed = os.clock() - started
+                task.wait(elapsed < period and math.max(0.001, period - elapsed) or period)
+            end
+            U.Loops[key] = nil
+        end)
+    end
+
+    -- ---------- UI ----------
+    local TrainCard = UpgradeTab:AddCard("Training", "Left")
+    local UpgradeCard = UpgradeTab:AddCard("Upgrades", "Right")
+
+    U.Toggles.AutoTrain = TrainCard:AddToggle({
+        Name = "Auto Train", Description = "Trains at the best area nonstop and drinks your potions", Default = false,
+        Callback = function(v)
+            U.Opt.AutoTrain = v
+            U.Fails.AutoTrain = nil
+            if v then StartLoop("AutoTrain", function() return UC.TrainInterval end, TrainStep) end
+            task.spawn(Util.Try, SetTraining, v)
+        end,
+    })
+
+    U.Toggles.AutoClick = TrainCard:AddToggle({
+        Name = "Auto Click", Description = "Steady training clicks; pauses while typing or respawning", Default = false,
+        Callback = function(v)
+            U.Opt.AutoClick = v
+            U.Fails.AutoClick = nil
+            if not v then return end
+            local ok = pcall(function() return GameLib.Need(ReplicatedStorage.CTRL.TrainCTRL) end)
+            if not ok then
+                U.Opt.AutoClick = false
+                U.Toggles.AutoClick:Set(false, true)
+                unotify("Auto Click is not available on this executor", "Warning")
+                return
+            end
+            StartLoop("AutoClick", function() return 1 / math.clamp(tonumber(U.Opt.ClickRate) or 6, 1, 25) end, function()
+                if CanClick() then ClickOnce() end
+            end)
+        end,
+    })
+
+    TrainCard:AddSlider({ Name = "Clicks per second", Min = 1, Max = 25, Default = 6, Increment = 1, Callback = function(v)
+        U.Opt.ClickRate = v
+    end })
+
+    TrainCard:AddToggle({ Name = "Pause while typing", Default = true, Callback = function(v)
+        U.Opt.ClickPauseTyping = v
+    end })
+
+    U.Toggles.AutoRebirth = TrainCard:AddToggle({
+        Name = "Auto Rebirth", Description = "Rebirths as soon as your level is high enough", Default = false,
+        Callback = function(v)
+            U.Opt.AutoRebirth = v
+            U.Fails.AutoRebirth = nil
+            if v then StartLoop("AutoRebirth", function() return UC.RebirthInterval end, RebirthStep) end
+        end,
+    })
+
+    TrainCard:AddButton({ Name = "Rebirth Now", Primary = false, Callback = function()
+        task.spawn(function()
+            local ok, err = pcall(Rebirth)
+            if not ok then
+                warn("[LazyJiro] rebirth:", tostring(err))
+                unotify("Rebirth failed; check the console", "Error")
+            else
+                unotify("Rebirth sent")
+            end
+        end)
+    end })
+
+    local upgradeDropdown = UpgradeCard:AddDropdown({
+        Name = "Upgrades To Buy", Stacked = true, Multi = true,
+        Options = { "Loading..." }, Default = {},
+        Callback = function(set)
+            set["Loading..."] = nil
+            U.Opt.Upgrades = set
+        end,
+    })
+
+    U.Toggles.AutoUpgrade = UpgradeCard:AddToggle({
+        Name = "Auto Buy Upgrades", Description = "Buys the selected upgrades whenever possible", Default = false,
+        Callback = function(v)
+            U.Opt.AutoUpgrade = v
+            U.Fails.AutoUpgrade = nil
+            if v then StartLoop("AutoUpgrade", function() return UC.UpgradeInterval end, BuySelected) end
+        end,
+    })
+
+    UpgradeCard:AddButton({ Name = "Buy Upgrade Now", Primary = false, Callback = function()
+        task.spawn(function()
+            local ok, err = pcall(BuySelected)
+            if not ok then
+                warn("[LazyJiro] buy upgrade:", tostring(err))
+                unotify("Buy failed; check the console", "Error")
+            else
+                unotify("Upgrade purchase sent")
+            end
+        end)
+    end })
+
+    -- upgrade list is read from the game after the menu is up so a slow load never blocks it
+    task.spawn(function()
+        local ok, names = pcall(UpgradeNames)
+        if ok and type(names) == "table" and #names > 0 then
+            upgradeDropdown:Refresh(names)
+            upgradeDropdown:Set(names) -- everything selected by default
+        else
+            warn("[LazyJiro] upgrade list:", names)
+            upgradeDropdown:Refresh({ "Unavailable" })
+            upgradeDropdown:Set({}, true)
+            unotify("Upgrade list could not be read", "Warning")
+        end
+    end)
+
+    -- stop every worker when the UI is destroyed
+    Window.reg({ Disconnect = function()
+        U.Alive = false
+        if U.Opt.AutoTrain then
+            U.Opt.AutoTrain = false
+            task.spawn(Util.Try, TrainLeave)
+        end
+    end })
+end
+
+-- ============================================================
 --  AUTO ROLL (class reroll)
 -- ============================================================
 local ClassServer = ReplicatedStorage:WaitForChild("Remote"):WaitForChild("Class_Server")
@@ -2112,4 +2468,4 @@ pcall(function()
     end)
 end)
 
-Window:Notify({ Title = "LazyJiro", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })
+Window:Notify({ Title = "𝐋𝐚𝐳𝐲 𝐉𝐢𝐫𝐨岡いオ", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })

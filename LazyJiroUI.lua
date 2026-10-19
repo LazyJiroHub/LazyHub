@@ -198,11 +198,20 @@ function Elements:AddSeparator()
 end
 
 function Elements:AddToggle(o)
-    local row = Row(self, 32)
+    local desc = o.Description ~= nil
+    local row = Row(self, desc and 46 or 32)
     addEl(self, o.Name, row)
-    RowLabel(row, o.Name)
+    RowLabel(row, o.Name, desc and UDim2.new(1, -56, 0, 32) or nil)
+    if desc then
+        New("TextLabel", {
+            Position = UDim2.fromOffset(0, 30), Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1,
+            Text = o.Description, Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = Theme.SubText,
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = row,
+        })
+    end
     local sw = New("Frame", {
-        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0),
+        AnchorPoint = desc and Vector2.new(1, 0) or Vector2.new(1, 0.5),
+        Position = desc and UDim2.new(1, 0, 0, 5) or UDim2.new(1, 0, 0.5, 0),
         Size = UDim2.fromOffset(42, 22), BackgroundColor3 = Theme.Element, Parent = row,
     })
     Corner(sw, UDim.new(0.5, 0))
@@ -406,9 +415,10 @@ function Elements:AddDropdown(o)
         })
         if o.Description then
             New("TextLabel", {
-                LayoutOrder = -1, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1, Text = o.Description,
+                LayoutOrder = -1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+                Text = o.Description, TextWrapped = true,
                 Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Left,
-                TextTruncate = Enum.TextTruncate.AtEnd, Parent = cont,
+                Parent = cont,
             })
         end
     end
@@ -556,8 +566,15 @@ function Elements:AddInput(o)
             LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1, Text = o.Name,
             Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left, Parent = cont,
         })
+        if o.Description then
+            New("TextLabel", {
+                LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+                Text = o.Description, TextWrapped = true, Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = Theme.SubText,
+                TextXAlignment = Enum.TextXAlignment.Left, Parent = cont,
+            })
+        end
         local sbox = New("TextBox", {
-            LayoutOrder = 2, Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = Theme.Element, Text = o.Default or "",
+            LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = Theme.Element, Text = o.Default or "",
             PlaceholderText = o.Placeholder or "Type here...", PlaceholderColor3 = Theme.SubText, Font = Enum.Font.Gotham,
             TextSize = 12, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false, Parent = cont,
         })

@@ -2,6 +2,7 @@ local Players          = game:GetService("Players")
 local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local RunService       = game:GetService("RunService")
+local TextService      = game:GetService("TextService")
 local CoreGui          = game:GetService("CoreGui")
 local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -171,6 +172,7 @@ local Elements = {}
 local function nextOrder(card)
     if card._empty then card._empty:Destroy(); card._empty = nil end
     card._n = card._n + 1
+    card._labelGroup = nil
     if card.Tab and card.Tab.Balance then card.Tab.Balance() end
     return card._n
 end
@@ -416,14 +418,22 @@ function Elements:AddDropdown(o)
         AutoButtonColor = false, Text = "", Parent = cont,
     })
     Corner(head, 10); Stroke(head, Theme.Stroke, 1)
-    if not stacked then New("TextLabel", {
-        Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(0.4, -12, 1, 0), BackgroundTransparency = 1, Text = o.Name,
-        Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
-        TextTruncate = Enum.TextTruncate.AtEnd, Parent = head,
-    }) end
+    -- label is sized to fit its own text (capped) so names like "Ore Rarity Filter" are not cut off
+    local labelW = 0
+    if not stacked then
+        local okW, tw = pcall(function()
+            return TextService:GetTextSize(tostring(o.Name), 13, Enum.Font.GothamMedium, Vector2.new(1000, 36)).X
+        end)
+        labelW = math.clamp((okW and tw or 80) + 8, 40, 125)
+        New("TextLabel", {
+            Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(0, labelW, 1, 0), BackgroundTransparency = 1, Text = o.Name,
+            Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Theme.Text, TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd, Parent = head,
+        })
+    end
     local val = New("TextLabel", {
-        Position = stacked and UDim2.new(0, 12, 0, 0) or UDim2.new(0.4, 0, 0, 0),
-        Size = stacked and UDim2.new(1, -34, 1, 0) or UDim2.new(0.6, -30, 1, 0), BackgroundTransparency = 1, Text = "",
+        Position = stacked and UDim2.new(0, 12, 0, 0) or UDim2.new(0, 12 + labelW, 0, 0),
+        Size = stacked and UDim2.new(1, -34, 1, 0) or UDim2.new(1, -(12 + labelW + 26), 1, 0), BackgroundTransparency = 1, Text = "",
         Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = stacked and Theme.Text or Theme.Accent,
         TextXAlignment = stacked and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right,
         TextTruncate = Enum.TextTruncate.AtEnd, Parent = head,
@@ -614,12 +624,27 @@ function Elements:AddKeybind(o)
 end
 
 function Elements:AddLabel(text)
+    -- consecutive labels share one tight group (4px apart) instead of a full row gap each
+    local group = self._labelGroup
+    if not group then
+        group = New("Frame", {
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+            LayoutOrder = nextOrder(self), Parent = self.Frame,
+        })
+        New("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = group })
+        addEl(self, text, group)
+        self._labelGroup = group
+        self._labelEntry = self.Els[#self.Els]
+        self._labelCount = 0
+    else
+        self._labelEntry.Name = self._labelEntry.Name .. " " .. tostring(text)
+    end
+    self._labelCount = self._labelCount + 1
     local l = New("TextLabel", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, TextWrapped = true,
         Text = text, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = Theme.SubText,
-        TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = nextOrder(self), Parent = self.Frame,
+        TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = self._labelCount, Parent = group,
     })
-    addEl(self, text, l)
     return { Set = function(_, t) l.Text = t end }
 end
 
@@ -756,7 +781,7 @@ function Lib:CreateWindow(cfg)
     search.FocusLost:Connect(function() Tween(searchStroke, { Color = Theme.Stroke }, 0.15) end)
 
     local nav = New("ScrollingFrame", {
-        Position = UDim2.fromOffset(0, 128), Size = UDim2.new(1, 0, 1, -204), BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(0, 122), Size = UDim2.new(1, 0, 1, -198), BackgroundTransparency = 1,
         ScrollBarThickness = 0, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), Parent = side,
     })
     New("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Center, Parent = nav })

@@ -1105,10 +1105,16 @@ function Lib:CreateWindow(cfg)
             })
             -- UIPadding is not applied to scale sizes inside a ScrollingFrame, which made the
             -- columns overflow on the right. Inset the row with explicit offsets instead.
+            New("UIListLayout", {
+                SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Center, Parent = tab.Frame,
+            })
+            New("Frame", { LayoutOrder = 1, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1, Parent = tab.Frame })
             local colRow = New("Frame", {
-                Position = UDim2.fromOffset(16, 14), Size = UDim2.new(1, -32, 0, 0),
+                LayoutOrder = 2, Size = UDim2.new(1, -32, 0, 0),
                 AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = tab.Frame,
             })
+            -- bottom spacer so the last card never touches the window edge when scrolled
+            New("Frame", { LayoutOrder = 3, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1, Parent = tab.Frame })
             New("UIListLayout", {
                 FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 16),
                 SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Top,
@@ -1126,32 +1132,21 @@ function Lib:CreateWindow(cfg)
             end
             tab.Cols = { Left = col(1), Right = col(2) }
 
+            -- A column with no cards is hidden and the other one takes the full width, so a
+            -- single-card tab is not stuck in half the window. Cards keep their natural height
+            -- (equal 14px bottom padding) instead of being stretched with dead space.
             tab.Balance = function()
-                if tab._balancing then return end
-                tab._balancing = true
-                task.delay(0.1, function()
-                    tab._balancing = false
-                    for _, c in ipairs(tab.Cards) do c.Limit.MinSize = Vector2.new(0, 0) end
-                    task.wait()
-                    task.wait()
-                    if not tab.Frame.Parent then return end
-                    local sc = math.max(scale.Scale, 0.05)
-                    local info = {}
-                    for _, column in pairs(tab.Cols) do
-                        local last
-                        for _, c in ipairs(tab.Cards) do
-                            if c.Frame.Parent == column and c.Frame.Visible then last = c end
-                        end
-                        table.insert(info, { h = column.AbsoluteSize.Y / sc, last = last })
-                    end
-                    local target = 0
-                    for _, i in ipairs(info) do target = math.max(target, i.h) end
-                    for _, i in ipairs(info) do
-                        if i.last and i.h < target and (target - i.h) <= 60 then
-                            i.last.Limit.MinSize = Vector2.new(0, i.last.Frame.AbsoluteSize.Y / sc + (target - i.h))
-                        end
-                    end
-                end)
+                local hasL, hasR = false, false
+                for _, c in ipairs(tab.Cards) do
+                    if c.Frame.Parent == tab.Cols.Left then hasL = true end
+                    if c.Frame.Parent == tab.Cols.Right then hasR = true end
+                end
+                local single = hasL ~= hasR
+                tab.Cols.Left.Visible = hasL or not single
+                tab.Cols.Right.Visible = hasR or not single
+                local w = single and UDim2.new(1, 0, 0, 0) or UDim2.new(0.5, -8, 0, 0)
+                tab.Cols.Left.Size = w
+                tab.Cols.Right.Size = w
             end
 
             function tab:AddCard(title, side, tag)
@@ -1194,6 +1189,7 @@ function Lib:CreateWindow(cfg)
                     Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = Theme.SubText, TextTransparency = 0.45, Parent = card.Frame,
                 })
                 table.insert(tab.Cards, card)
+                tab.Balance()
                 return card
             end
 

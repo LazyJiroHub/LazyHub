@@ -1,4 +1,10 @@
+-- The loading screen lives in Loader.lua. When run through the loader this picks it up;
+-- when run on its own it is a harmless no-op.
+local Intro = (getgenv and getgenv().LazyJiroIntro) or { Set = function() end, Finish = function() end, Close = function() end }
+
+Intro.Set("Loading menu", 0.15)
 local Lib = loadstring(game:HttpGet("https://raw.githubusercontent.com/jiroscriptsss/LazyHub/main/LazyJiroUI.lua"))()
+Intro.Set("Building interface", 0.4)
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -141,7 +147,7 @@ local function autoKillLoop()
 end
 
 local Window = Lib:CreateWindow({
-    Name      = "𝐋𝐚𝐳𝐲 𝐉𝐢𝐫𝐨岡いオ",
+    Name      = "Lazy Jiro岡いオ",
     ToggleKey = Enum.KeyCode.RightShift,
     Link      = "https://github.com/jiroscriptsss/LazyHub",
 })
@@ -150,8 +156,11 @@ local Window = Lib:CreateWindow({
 if (Lib.Version or 0) < 4 then
     warn("[LazyJiro] LazyJiroUI.lua on GitHub is outdated. Upload the new one, wait a few minutes, then run again.")
     Window:Notify({ Title = "Update needed", Content = "LazyJiroUI.lua on GitHub is outdated. Upload the new file, wait a few minutes, then run again.", Duration = 12 })
+    Intro.Close()
     return
 end
+
+Intro.Set("Loading features", 0.6)
 
 Window:AddCategory("Main")
 local Main = Window:AddPage({ Name = "Farm" })
@@ -802,6 +811,419 @@ do
 
     Shared.Util, Shared.GameLib, Shared.Cfg, Shared.notify = Util, GameLib, Cfg, notify
     Shared.Ore, Shared.Stage, Shared.Farm, Shared.RarityNames = Ore, Stage, Farm, RarityNames
+end
+
+-- ============================================================
+--  WORLD BOSS (ported from the old PixeL script)
+-- ============================================================
+do
+    local Util, GameLib, notify = Shared.Util, Shared.GameLib, Shared.notify
+    local Stage = Shared.Stage
+    local TeleportService = game:GetService("TeleportService")
+    local HttpService = game:GetService("HttpService")
+
+    local BC = {
+        SaveFolder = "Lazy Jiro",
+        -- run again after a server hop (point this at your Loader.lua link)
+        ReloadSource = [[
+if not game:IsLoaded() then game.Loaded:Wait() end
+task.wait(2)
+local url = "https://raw.githubusercontent.com/jiroscriptsss/LazyHub/main/Loader.lua"
+local ok, body = pcall(game.HttpGet, game, url)
+if not (ok and type(body) == "string") then
+    local requester = request or http_request or (syn and syn.request) or (http and http.request)
+    local sent, reply = pcall(requester, { Url = url, Method = "GET" })
+    body = sent and type(reply) == "table" and reply.Body
+end
+if type(body) == "string" then loadstring(body)() end]],
+        MaxFailures = 5, RetryBase = 0.25, RetryMax = 2,
+        BossCards = 8,
+        BossAttackIds = { Katana = "K_ATK_1", Great = "G_ATK_1" },
+        BossHitsPerTick = 30, BossHitGap = 0.02, BossJoinSettle = 1, BossClaimDelay = 3.5,
+        BossStandHeight = 3, BossStandBack = 8, BossReach = 25,
+        BossInterval = 1, BossHopInterval = 5, BossHopLead = 150, BossHopAfter = 8,
+        BossHopFlag = "bosshop.txt", BossHopResume = 180, BossHopServers = "bossservers.json",
+        HopListTtl = 120, HopBackoffStart = 5, HopBackoffMax = 60, HopGiveUp = 8, HopStall = 30, HopGap = 15,
+    }
+
+    local B = {
+        Alive = true, Loops = {}, Fails = {}, Toggles = {},
+        BossReturn = nil, BossDone = nil, BossExit = nil, BossExitWarned = false,
+        BossHopping = false, HopFails = 0, HopBackoff = nil, HopBlockedUntil = 0, HopQueued = false,
+        Opt = { AutoWorldBoss = false, BossCards = true, BossHop = false },
+    }
+
+    local function bnotify(text, title) notify(text, title or "World Boss") end
+
+    local function HttpGet(url)
+        local ok, body = pcall(function() return game:HttpGet(url) end)
+        if ok and type(body) == "string" then return body end
+        local send = request or http_request or (syn and syn.request) or (http and http.request)
+        if not send then return nil end
+        local sent, response = pcall(send, { Url = url, Method = "GET" })
+        if sent and type(response) == "table" and response.StatusCode == 200 and type(response.Body) == "string" then
+            return response.Body
+        end
+        return nil
+    end
+
+    -- ---------- boss fight ----------
+    local function AttackId()
+        return BC.BossAttackIds[LocalPlayer:GetAttribute("WeaponType")]
+    end
+
+    local function Join()
+        Util.Remote("WorldBoss", "IntoWorldBossFight"):FireServer()
+        local char = LocalPlayer.Character
+        if char and not B.BossReturn then B.BossReturn = char:GetPivot() end
+    end
+
+    local function StandNear(boss)
+        local char = LocalPlayer.Character
+        if not char then return end
+        local pos = boss:GetPivot().Position
+        if (char:GetPivot().Position - pos).Magnitude > BC.BossReach then
+            char:PivotTo(CFrame.new(pos + Vector3.new(0, BC.BossStandHeight, BC.BossStandBack), pos))
+        end
+    end
+
+    local function BossStep()
+        local bossName = workspace:GetAttribute("CurrentWorldBoss")
+        if not bossName then return end
+        local attackId = AttackId()
+        if not attackId then return end
+        if LocalPlayer:GetAttribute("IntoFight") ~= "WorldBoss" then
+            Join()
+            task.wait(BC.BossJoinSettle)
+        end
+
+        local enemyFolder = workspace:FindFirstChild("EnemyFolder_Server") or workspace:FindFirstChild("EnemyFolder")
+        local boss = enemyFolder and enemyFolder:FindFirstChild(bossName)
+        if not boss or boss:GetAttribute("Dead") then return end
+        StandNear(boss)
+        local announce = Util.Remote("Attack", "UseAnyATKRE")
+        local attack = Util.Remote("Attack", "AttackEnemyServiceRE")
+        for _ = 1, BC.BossHitsPerTick do
+            if not (B.Opt.AutoWorldBoss and boss.Parent) then return end
+            announce:FireServer(attackId, workspace:GetServerTimeNow())
+            attack:FireServer({ bossName }, { Phase = 1, SkillID = attackId, Attacker = LocalPlayer }, workspace:GetServerTimeNow())
+            task.wait(BC.BossHitGap)
+        end
+    end
+
+    local function ClaimCards()
+        local claim = Util.FindRemote("WorldBoss", "TryClaimBossRewardRE")
+        if not claim then return end
+        for card = 1, BC.BossCards do
+            if claim.ClassName == "RemoteFunction" then
+                task.spawn(claim.InvokeServer, claim, tostring(card))
+            else
+                task.spawn(claim.FireServer, claim, tostring(card))
+            end
+        end
+    end
+
+    -- ---------- leaving the fight (survives a renamed exit remote) ----------
+    local ExitWords = { exit = true, leave = true, quit = true, out = true, back = true, ["end"] = true, finish = true, ["return"] = true }
+    local SkipWords = { into = true, enter = true, join = true, dead = true, escape = true, claim = true, reward = true, attack = true, atk = true, cards = true, card = true, tick = true }
+
+    local function NameWords(name)
+        local words = {}
+        for word in name:gsub("(%l)(%u)", "%1 %2"):gsub("(%u)(%u%l)", "%1 %2"):lower():gmatch("%a+") do
+            words[#words + 1] = word
+        end
+        return words
+    end
+
+    local function ExitRemote()
+        local cached = B.BossExit
+        if cached and cached.Parent then return cached end
+        B.BossExit = nil
+
+        local direct = Util.FindRemote("WorldBoss", "ExitWorldBossFight")
+        if direct then
+            B.BossExit = direct
+            return direct
+        end
+
+        local best, bestScore = nil, 0
+        local ok, all = pcall(function() return ReplicatedStorage:GetDescendants() end)
+        for _, inst in ipairs(ok and all or {}) do
+            local class = inst.ClassName
+            if class == "RemoteEvent" or class == "RemoteFunction" or class == "UnreliableRemoteEvent" then
+                if inst:GetFullName():lower():find("boss", 1, true) then
+                    local isExit, skip, score = false, false, 0
+                    for _, word in ipairs(NameWords(inst.Name)) do
+                        if ExitWords[word] then isExit = true; score += 10 end
+                        if SkipWords[word] then skip = true end
+                        if word == "boss" then score += 3 elseif word == "world" or word == "fight" then score += 1 end
+                    end
+                    if isExit and not skip then
+                        if inst.Parent and inst.Parent.Name:lower():find("boss", 1, true) then score += 5 end
+                        if score > bestScore or (score == bestScore and best and inst:GetFullName() < best:GetFullName()) then
+                            best, bestScore = inst, score
+                        end
+                    end
+                end
+            end
+        end
+        if best then
+            B.BossExit = best
+            print(("[LazyJiro] boss exit remote -> %s"):format(best:GetFullName()))
+        end
+        return best
+    end
+
+    local function Leave()
+        local exit = ExitRemote()
+        if exit then
+            if exit.ClassName == "RemoteFunction" then
+                task.spawn(function() pcall(exit.InvokeServer, exit) end)
+            else
+                pcall(exit.FireServer, exit)
+            end
+        else
+            if not B.BossExitWarned then
+                B.BossExitWarned = true
+                warn("[LazyJiro] boss exit remote not found, using the game's own ExitFight instead")
+            end
+            pcall(Stage.ExitFight)
+        end
+        LocalPlayer:SetAttribute("IntoFight", nil)
+        local char = LocalPlayer.Character
+        if B.BossReturn and char then char:PivotTo(B.BossReturn) end
+        B.BossReturn = nil
+    end
+
+    -- ---------- server hop ----------
+    local function HopFlag(enabled)
+        local flag = BC.SaveFolder .. "/" .. BC.BossHopFlag
+        pcall(function()
+            if enabled then
+                if not isfolder(BC.SaveFolder) then makefolder(BC.SaveFolder) end
+                writefile(flag, tostring(os.time()))
+            elseif isfile(flag) then
+                delfile(flag)
+            end
+        end)
+    end
+
+    local function SinceLastHop()
+        local ok, stamp = pcall(readfile, BC.SaveFolder .. "/" .. BC.BossHopFlag)
+        if not ok or not tonumber(stamp) then return nil end
+        return os.time() - tonumber(stamp)
+    end
+
+    local function HopWanted()
+        local since = SinceLastHop()
+        return since ~= nil and since < BC.BossHopResume
+    end
+
+    local function LoadServers()
+        local ok, text = pcall(readfile, BC.SaveFolder .. "/" .. BC.BossHopServers)
+        if not ok then return {}, 0 end
+        local decoded
+        ok, decoded = pcall(HttpService.JSONDecode, HttpService, text)
+        if not ok or type(decoded) ~= "table" or type(decoded.ids) ~= "table" then return {}, 0 end
+        local fetchedAt = tonumber(decoded.at) or 0
+        if os.time() - fetchedAt > BC.HopListTtl then return {}, 0 end
+        return decoded.ids, fetchedAt
+    end
+
+    local function SaveServers(ids, fetchedAt)
+        pcall(function()
+            if not isfolder(BC.SaveFolder) then makefolder(BC.SaveFolder) end
+            writefile(BC.SaveFolder .. "/" .. BC.BossHopServers, HttpService:JSONEncode({ at = fetchedAt, ids = ids }))
+        end)
+    end
+
+    local function FetchServers()
+        if os.clock() < B.HopBlockedUntil then return {} end
+        local body = HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId))
+        local ok, list = pcall(HttpService.JSONDecode, HttpService, body or "")
+        local ids = {}
+        for _, server in ipairs(ok and type(list) == "table" and type(list.data) == "table" and list.data or {}) do
+            if server.id ~= game.JobId and server.playing < server.maxPlayers then table.insert(ids, server.id) end
+        end
+        if #ids > 0 then
+            B.HopFails, B.HopBackoff = 0, nil
+            return ids
+        end
+        B.HopFails += 1
+        B.HopBackoff = math.min((B.HopBackoff or BC.HopBackoffStart / 2) * 2, BC.HopBackoffMax)
+        B.HopBlockedUntil = os.clock() + B.HopBackoff
+        warn("[LazyJiro] server list refused, retry in", B.HopBackoff, "s, fail", B.HopFails)
+        return {}
+    end
+
+    local function PickServer()
+        local ids, fetchedAt = LoadServers()
+        if #ids == 0 then
+            ids, fetchedAt = FetchServers(), os.time()
+        end
+        while #ids > 0 do
+            local serverId = table.remove(ids, math.random(#ids))
+            if serverId ~= game.JobId then
+                SaveServers(ids, fetchedAt)
+                return serverId
+            end
+        end
+        SaveServers(ids, fetchedAt)
+        return nil
+    end
+
+    local function Hop()
+        local serverId = PickServer()
+        if not serverId then return end
+        B.BossHopping = os.clock()
+        HopFlag(true)
+        local queue = queue_on_teleport or queueonteleport
+        if queue and not B.HopQueued then
+            queue(BC.ReloadSource)
+            B.HopQueued = true
+        end
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, serverId, LocalPlayer)
+    end
+
+    local function WorthStaying()
+        local boss = workspace:GetAttribute("CurrentWorldBoss")
+        if boss and not B.BossDone then return true end
+        if B.BossDone then return os.clock() - B.BossDone < BC.BossHopAfter end
+        local nextTick, serverTime = workspace:GetAttribute("NextWorldBossTick"), workspace:GetAttribute("ServerTime")
+        if not nextTick or not serverTime then return true end
+        return nextTick - serverTime <= BC.BossHopLead
+    end
+
+    local function HopGiveUp()
+        B.Opt.BossHop = false
+        HopFlag(false)
+        if B.Toggles.BossHop then B.Toggles.BossHop:Set(false, true) end
+        bnotify("Boss Server Hop stopped: no server list from Roblox, try again later", "Warning")
+    end
+
+    local function HopStep()
+        if B.BossHopping then
+            if os.clock() - B.BossHopping < BC.HopStall then return end
+            B.BossHopping = false
+        end
+        if WorthStaying() then return end
+        if (SinceLastHop() or BC.HopGap) < BC.HopGap then return end
+        if B.HopFails >= BC.HopGiveUp then
+            HopGiveUp()
+            return
+        end
+        Hop()
+    end
+
+    -- ---------- job runner (one persistent worker per feature, auto-stops a feature that keeps failing) ----------
+    local function Run(key, fn)
+        if not B.Alive or not B.Opt[key] then return end
+        local ok, err = pcall(fn)
+        if ok then B.Fails[key] = nil; return end
+        local fails = (B.Fails[key] or 0) + 1
+        B.Fails[key] = fails
+        if fails == 1 then warn("[LazyJiro]", key, tostring(err)) end
+        if fails >= BC.MaxFailures then
+            B.Fails[key] = nil
+            B.Opt[key] = false
+            local reason = tostring(err):match("[^\n]*")
+            warn("[LazyJiro]", key, "stopped:", reason)
+            local toggle = B.Toggles[key]
+            if toggle then toggle:Set(false, true) end
+            bnotify(key .. " stopped: " .. reason, "Warning")
+            return
+        end
+        task.wait(math.min(BC.RetryMax, BC.RetryBase * 2 ^ (fails - 1)))
+    end
+
+    local function StartLoop(key, interval, fn)
+        if B.Loops[key] then return end
+        B.Loops[key] = true
+        task.spawn(function()
+            while B.Alive do
+                local started = os.clock()
+                if B.Opt[key] then Run(key, fn) end
+                local period = math.max(0.04, B.Opt[key] and interval or 0.1)
+                local elapsed = os.clock() - started
+                task.wait(elapsed < period and math.max(0.001, period - elapsed) or period)
+            end
+            B.Loops[key] = nil
+        end)
+    end
+
+    -- ---------- UI ----------
+    local BossCard = Farming:AddCard("World Boss", "Left")
+
+    B.Toggles.AutoWorldBoss = BossCard:AddToggle({
+        Name = "Auto World Boss", Description = "Joins every world boss and kills it", Default = false,
+        Callback = function(v)
+            B.Opt.AutoWorldBoss = v
+            B.Fails.AutoWorldBoss = nil
+            if v then
+                StartLoop("AutoWorldBoss", BC.BossInterval, BossStep)
+            elseif LocalPlayer:GetAttribute("IntoFight") == "WorldBoss" then
+                task.spawn(Util.Try, Leave)
+            end
+        end,
+    })
+
+    BossCard:AddToggle({ Name = "Take every reward card", Default = true, Callback = function(v)
+        B.Opt.BossCards = v
+    end })
+
+    B.Toggles.BossHop = BossCard:AddToggle({
+        Name = "Boss Server Hop",
+        Description = "Hops to servers where the boss is up or about to spawn, kills it, then moves on",
+        Default = false,
+        Callback = function(v)
+            B.Opt.BossHop = v
+            B.Fails.BossHop = nil
+            HopFlag(v)
+            if v then
+                local main = B.Toggles.AutoWorldBoss
+                if main and not main.Value then main:Set(true) end
+                StartLoop("BossHop", BC.BossHopInterval, HopStep)
+            end
+        end,
+    })
+
+    -- boss events: claim the reward cards, then leave the fight
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local dead = Util.Remote("WorldBoss", "BossDeadRE")
+            Window.reg(dead.OnClientEvent:Connect(function()
+                if not B.Opt.AutoWorldBoss then return end
+                task.delay(BC.BossClaimDelay, function()
+                    if B.Opt.BossCards then Util.Try(ClaimCards) end
+                    Util.Try(Leave)
+                    B.BossDone = os.clock()
+                end)
+            end))
+            local escape = Util.FindRemote("WorldBoss", "BossEscapeRE")
+            if escape and escape.ClassName ~= "RemoteFunction" then
+                Window.reg(escape.OnClientEvent:Connect(function()
+                    if B.Opt.AutoWorldBoss then Util.Try(Leave) end
+                end))
+            end
+        end)
+        if not ok then warn("[LazyJiro] boss hook:", err) end
+    end)
+
+    Window.reg(TeleportService.TeleportInitFailed:Connect(function()
+        if not B.BossHopping then return end
+        B.BossHopping = false
+        task.delay(1, Util.Try, HopStep)
+    end))
+
+    -- came here from a boss hop: turn the hop (and the boss farm) back on
+    task.defer(function()
+        if HopWanted() and B.Toggles.BossHop then B.Toggles.BossHop:Set(true) end
+    end)
+
+    Window.reg({ Disconnect = function()
+        B.Alive = false
+        if LocalPlayer:GetAttribute("IntoFight") == "WorldBoss" then task.spawn(Util.Try, Leave) end
+    end })
 end
 
 -- ============================================================
@@ -2468,4 +2890,6 @@ pcall(function()
     end)
 end)
 
-Window:Notify({ Title = "𝐋𝐚𝐳𝐲 𝐉𝐢𝐫𝐨岡いオ", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })
+Window:Notify({ Title = "Lazy Jiro岡いオ", Content = "Loaded (Forge page build). Press RightShift to hide or show.", Duration = 5 })
+Intro.Set("Almost ready", 0.9)
+if getgenv then getgenv().LazyJiroWindow = Window end

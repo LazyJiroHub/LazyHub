@@ -172,7 +172,7 @@ env.LazyJiroWindow = nil
 local base = "https://raw.githubusercontent.com/jiroscriptsss/LazyHub/main/Games/"
 
 local Games = {
-    [0] = "LootToForge.lua",
+    [118805555015549] = "LootToForge.lua",
 }
 
 local file = Games[game.GameId]

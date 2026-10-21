@@ -174,6 +174,7 @@ local base = "https://raw.githubusercontent.com/LazyJiroHub/LazyHub/refs/heads/m
 
 local Games = {
     [118805555015549] = "LootToForge.lua",
+	[113290951185459] = "AnimeDice.lua",
 }
 
 local file = Games[game.PlaceId] or Games[game.GameId]

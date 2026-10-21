@@ -170,45 +170,53 @@ env.LazyJiroIntro = Intro
 env.LazyJiroIntroAt = os.clock()
 env.LazyJiroWindow = nil
 
-local base = "https://raw.githubusercontent.com/LazyJiroHub/LazyHub/refs/heads/main/Folder/"
+local BASE = "https://raw.githubusercontent.com/LazyJiroHub/LazyHub/refs/heads/main/Folder/"
 
-local Games = {
-    [118805555015549] = "LootToForge.lua",
-	[113290951185459] = "AnimeDice.lua",
+-- one entry per game. ids can hold PlaceIds and GameIds, either one matches.
+-- add a game: copy a line, set the name, the file in Folder/, and its ids.
+local Registry = {
+    { name = "Anime Dice",   file = "AnimeDice.lua",  ids = { 113290951185459, 10708913337 } },
+    { name = "Loot To Forge", file = "LootToForge.lua", ids = { 118805555015549 } },
 }
 
-local file = Games[game.PlaceId] or Games[game.GameId]
+local byId = {}
+for _, entry in ipairs(Registry) do
+    for _, id in ipairs(entry.ids) do
+        byId[id] = entry
+    end
+end
 
-if not file then
-    warn(("[Lazy Jiro Hub] Game not supported. PlaceId=%s GameId=%s"):format(tostring(game.PlaceId), tostring(game.GameId)))
-    Intro.Set("This game is not supported", 1)
+local entry = byId[game.GameId] or byId[game.PlaceId]
+
+local function Fail(message, warning)
+    warn("[Lazy Jiro Hub] " .. warning)
+    Intro.Set(message, 1)
     task.delay(2.5, Intro.Close)
+end
+
+if not entry then
+    Fail("This game is not supported",
+        ("Game not supported. PlaceId=%s GameId=%s"):format(tostring(game.PlaceId), tostring(game.GameId)))
     return
 end
 
-Intro.Set("Downloading", 0.2)
-local ok, src = pcall(function() return game:HttpGet(base .. file) end)
+Intro.Set("Downloading " .. entry.name, 0.2)
+local ok, src = pcall(function() return game:HttpGet(BASE .. entry.file) end)
 if not ok then
-    warn("[Lazy Jiro Hub] Could not download " .. file .. ": " .. tostring(src))
-    Intro.Set("Could not download the script", 1)
-    task.delay(2.5, Intro.Close)
+    Fail("Could not download the script", "Could not download " .. entry.file .. ": " .. tostring(src))
     return
 end
 
 local fn, err = loadstring(src)
 if not fn then
-    warn("[Lazy Jiro Hub] Script error in " .. file .. ": " .. tostring(err))
-    Intro.Set("The script failed to load", 1)
-    task.delay(2.5, Intro.Close)
+    Fail("The script failed to load", "Script error in " .. entry.file .. ": " .. tostring(err))
     return
 end
 
-Intro.Set("Starting", 0.35)
+Intro.Set("Starting " .. entry.name, 0.35)
 local ran, runErr = pcall(fn)
 if not ran then
-    warn("[Lazy Jiro Hub] Script error in " .. file .. ": " .. tostring(runErr))
-    Intro.Set("The script hit an error", 1)
-    task.delay(2.5, Intro.Close)
+    Fail("The script hit an error", "Script error in " .. entry.file .. ": " .. tostring(runErr))
     return
 end
 

@@ -167,9 +167,10 @@ end
 
 local env = getgenv and getgenv() or _G
 env.LazyJiroIntro = Intro
+env.LazyJiroIntroAt = os.clock()
 env.LazyJiroWindow = nil
 
-local base = "https://raw.githubusercontent.com/jiroscriptsss/LazyHub/main/Games/"
+local base = "https://raw.githubusercontent.com/LazyJiroHub/LazyHub/refs/heads/main/Folder/"
 
 local Games = {
     [118805555015549] = "LootToForge.lua",

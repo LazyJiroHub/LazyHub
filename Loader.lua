@@ -175,10 +175,10 @@ local Games = {
     [118805555015549] = "LootToForge.lua",
 }
 
-local file = Games[game.GameId]
+local file = Games[game.PlaceId] or Games[game.GameId]
 
 if not file then
-    warn("[Lazy Jiro Hub] Game not supported: " .. tostring(game.GameId))
+    warn(("[Lazy Jiro Hub] Game not supported. PlaceId=%s GameId=%s"):format(tostring(game.PlaceId), tostring(game.GameId)))
     Intro.Set("This game is not supported", 1)
     task.delay(2.5, Intro.Close)
     return

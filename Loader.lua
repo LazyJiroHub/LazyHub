@@ -177,6 +177,7 @@ local BASE = "https://raw.githubusercontent.com/LazyJiroHub/LazyHub/refs/heads/m
 local Registry = {
     { name = "Anime Dice",   file = "AnimeDice.lua",  ids = { 113290951185459, 10708913337 } },
     { name = "Loot To Forge", file = "LootToForge.lua", ids = { 118805555015549 } },
+	{ name = "Tap Simulator Reborn", file = "TapSimulator.lua", ids = { 72858262610964 } },
 }
 
 local byId = {}

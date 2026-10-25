@@ -1,6 +1,9 @@
-if not game:IsLoaded() then game.Loaded:Wait() end
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 
 local Intro
+
 do
     local made, result = pcall(function()
         local Players = game:GetService("Players")
@@ -12,7 +15,9 @@ do
 
         pcall(function()
             local old = (gethui and gethui() or CoreGui):FindFirstChild("LazyJiroIntro")
-            if old then old:Destroy() end
+            if old then
+                old:Destroy()
+            end
         end)
 
         local gui = Instance.new("ScreenGui")
@@ -36,9 +41,8 @@ do
             gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
         end
 
-        local pinkA, pinkB =
-            Color3.fromRGB(255, 190, 212),
-            Color3.fromRGB(255, 150, 190)
+        local pinkA = Color3.fromRGB(255, 190, 212)
+        local pinkB = Color3.fromRGB(255, 150, 190)
 
         local function corner(o, r)
             local c = Instance.new("UICorner")
@@ -142,8 +146,11 @@ do
         )
         fillGrad.Parent = fill
 
-        local status, target, shown, clock, closed =
-            "Initializing", 0.05, 0, 0, false
+        local status = "Initializing"
+        local target = 0.05
+        local shown = 0
+        local clock = 0
+        local closed = false
 
         local beat = RunService.Heartbeat:Connect(function(dt)
             clock += dt
@@ -166,21 +173,40 @@ do
                 p.f.Rotation += p.rs * dt
             end
 
-            shown += (target - shown) * math.min(1, dt * 4)
-            fill.Size = UDim2.fromScale(math.clamp(shown, 0, 1), 1)
-            sub.Text = status .. string.rep(".", math.floor(clock * 2.5) % 4)
+            local progressStep = dt * 4
+
+            if progressStep > 1 then
+                progressStep = 1
+            end
+
+            shown += (target - shown) * progressStep
+            fill.Size = UDim2.fromScale(
+                math.clamp(shown, 0, 1),
+                1
+            )
+
+            sub.Text = status .. string.rep(
+                ".",
+                math.floor(clock * 2.5) % 4
+            )
         end)
 
         local api = {}
 
         function api.Set(text, pct)
-            if closed then return end
+            if closed then
+                return
+            end
+
             status = text or status
             target = math.max(target, pct or target)
         end
 
         function api.Close()
-            if closed then return end
+            if closed then
+                return
+            end
+
             closed = true
             beat:Disconnect()
             gui:Destroy()
@@ -188,9 +214,12 @@ do
 
         function api.Finish(window)
             task.spawn(function()
-                if closed then return end
+                if closed then
+                    return
+                end
 
                 local left = MIN_TIME - (os.clock() - started)
+
                 if left > 0 then
                     task.wait(left)
                 end
@@ -198,6 +227,7 @@ do
                 api.Set("Ready", 1)
 
                 local deadline = os.clock() + 0.8
+
                 while shown < 0.98 and os.clock() < deadline do
                     task.wait()
                 end
@@ -236,6 +266,7 @@ do
         end
 
         task.delay(45, api.Close)
+
         return api
     end)
 
@@ -251,6 +282,7 @@ do
 end
 
 local env = getgenv and getgenv() or _G
+
 env.LazyJiroIntro = Intro
 env.LazyJiroIntroAt = os.clock()
 env.LazyJiroWindow = nil
@@ -302,6 +334,7 @@ if not entry then
             tostring(game.GameId)
         )
     )
+
     return
 end
 
@@ -316,6 +349,7 @@ if not ok then
         "Could not download the script",
         "Could not download " .. entry.file .. ": " .. tostring(src)
     )
+
     return
 end
 
@@ -326,26 +360,20 @@ if not fn then
         "The script failed to load",
         "Script error in " .. entry.file .. ": " .. tostring(err)
     )
+
     return
 end
 
 Intro.Set("Starting " .. entry.name, 0.35)
 
-local function traceError(err)
-    if debug and type(debug.traceback) == "function" then
-        return debug.traceback(tostring(err), 2)
-    end
-
-    return tostring(err)
-end
-
-local ran, runErr = xpcall(fn, traceError)
+local ran, runErr = pcall(fn)
 
 if not ran then
     Fail(
         "The script hit an error",
-        "Script error in " .. entry.file .. ":\n" .. tostring(runErr)
+        "Script error in " .. entry.file .. ": " .. tostring(runErr)
     )
+
     return
 end
 

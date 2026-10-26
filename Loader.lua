@@ -302,6 +302,12 @@ local Registry = {
         file = "LootToForge.lua",
         ids = { 118805555015549 },
     },
+	
+	{
+        name = "Deep Fishing",
+        file = "DeepFishing.lua",
+        ids = { 132239307080610 },
+    },
 
     {
         name = "Tap Simulator Reborn",

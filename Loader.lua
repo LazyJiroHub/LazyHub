@@ -308,6 +308,12 @@ local Registry = {
         file = "DeepFishing.lua",
         ids = { 132239307080610 },
     },
+	
+	{
+        name = "Ride A Pet",
+        file = "RideAPet.lua",
+        ids = { 124216119978534 },
+    },
 
     {
         name = "Tap Simulator Reborn",

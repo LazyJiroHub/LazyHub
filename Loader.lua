@@ -314,6 +314,11 @@ local Registry = {
         file = "RideAPet.lua",
         ids = { 124216119978534 },
     },
+	
+	    name = "Project Delta Premium",
+        file = "Project Delta Premium.lua",
+        ids = { 7336302630, 2862098693 },
+    },
 
     {
         name = "Tap Simulator Reborn",

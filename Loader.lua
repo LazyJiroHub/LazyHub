@@ -318,7 +318,7 @@ local Registry = {
     {
         name = "Death Ball",
         file = "BladeBall.lua",
-        ids = { 5166944221 },
+        ids = { 5166944221, 15002061926 },
     },
 
     {

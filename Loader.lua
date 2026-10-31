@@ -324,7 +324,7 @@ local Registry = {
     {
         name = "Break And Steal",
         file = "BreakAndSteal.lua",
-        ids = { 10765288803 },
+        ids = { 114326934417838 },
     },
 
     {
